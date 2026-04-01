@@ -58,7 +58,7 @@ struct OledSettings {
     uint8_t i2cAddress = 0x3C;
     uint8_t width = 128;
     uint8_t height = 64;
-    uint8_t sdaPin = 21;
+    uint8_t sdaPin = 23;
     uint8_t sclPin = 19;
     int8_t resetPin = -1;
     uint16_t dimTimeoutSeconds = 0;

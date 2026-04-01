@@ -191,6 +191,36 @@ pio run -t upload
 pio device monitor -b 115200
 ```
 
+## VS Code Workflow
+
+The repository now includes VS Code workspace files under [.vscode](.vscode) so you can work from the VS Code UI without manually typing the PlatformIO commands each time.
+
+Recommended extension:
+
+- `PlatformIO IDE`
+
+Available task labels in VS Code:
+
+- `PlatformIO: Verify`
+- `PlatformIO: Upload (Auto Port)`
+- `PlatformIO: Monitor (Auto Port)`
+- `PlatformIO: List Serial Devices`
+
+How to use them in VS Code:
+
+1. Open `Terminal -> Run Task`.
+2. Choose `PlatformIO: Verify` to build.
+3. Choose `PlatformIO: Upload (Auto Port)` to flash the board.
+4. Choose `PlatformIO: Monitor (Auto Port)` to open the serial monitor.
+
+Serial-port behavior:
+
+- the project intentionally does not hardcode `upload_port`
+- PlatformIO is allowed to auto-discover the serial adapter
+- at the time of setup, PlatformIO detected a `USB-SERIAL CH340` device on `COM4`
+
+If Windows later renumbers the port, the tasks still keep working as long as PlatformIO can see a single matching ESP32 serial adapter.
+
 ## First Flash and Provisioning
 
 On boot the firmware does this:

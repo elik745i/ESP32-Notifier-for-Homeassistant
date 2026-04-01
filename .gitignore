@@ -9,4 +9,5 @@ include/generated_web_assets.h
 *.map
 *.log
 build.log
+upload_check.log
 

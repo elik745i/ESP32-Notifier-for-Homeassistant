@@ -66,6 +66,7 @@ class AppState {
   public:
     AppState();
     ~AppState();
+        bool begin();
 
     void setDevice(const String& deviceName, const String& friendlyName, bool usingSaved);
     void setWiFiStatus(bool connected, bool apMode, const String& ssid, const IPAddress& ip, int32_t rssi, const String& apSsid);
@@ -79,6 +80,7 @@ class AppState {
     void toJson(JsonObject root) const;
 
   private:
+        bool ensureMutex() const;
     mutable SemaphoreHandle_t mutex_;
     AppStateSnapshot state_;
 };
