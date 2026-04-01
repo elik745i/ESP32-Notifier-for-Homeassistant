@@ -34,6 +34,21 @@ The firmware publishes MQTT state for:
 
 Native Home Assistant `media_player` semantics are not fully implemented yet. See the limitations section.
 
+## Dev Board
+
+This project is intended around the Wemos / LOLIN32 Lite style ESP32 board.
+
+Reference links and local documentation:
+
+- Dev board page: https://www.espboards.dev/esp32/lolin32-lite/
+- Board documentation PDF: [Docs/Wemos-ESP32-Lolin32-Board-BOOK-ENGLISH.pdf](Docs/Wemos-ESP32-Lolin32-Board-BOOK-ENGLISH.pdf)
+- Case / enclosure files: [3D](3D)
+- Demo / reference video: https://www.youtube.com/watch?v=mt_Qr-lGUJ4
+
+Pinout image used for this board:
+
+![LOLIN32 Lite pinout](Docs/lolin32_lite_pinout.png)
+
 ## Hardware Wiring
 
 Known required pins:
@@ -57,6 +72,9 @@ OLED assumptions:
 ## Project Layout
 
 - [platformio.ini](platformio.ini)
+- [Docs/lolin32_lite_pinout.png](Docs/lolin32_lite_pinout.png)
+- [Docs/Wemos-ESP32-Lolin32-Board-BOOK-ENGLISH.pdf](Docs/Wemos-ESP32-Lolin32-Board-BOOK-ENGLISH.pdf)
+- [3D](3D)
 - [include/default_config.h](include/default_config.h)
 - [include/settings_schema.h](include/settings_schema.h)
 - [include/version.h](include/version.h)
