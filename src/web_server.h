@@ -1,0 +1,57 @@
+#pragma once
+
+#include <Arduino.h>
+#include <ESPAsyncWebServer.h>
+#include <functional>
+
+#include "app_state.h"
+#include "ota_manager.h"
+#include "settings_manager.h"
+#include "wifi_manager.h"
+
+class WebServerManager {
+  public:
+    using SettingsGetter = std::function<SettingsBundle(void)>;
+    using SettingsSaver = std::function<bool(JsonVariantConst, String&)>;
+    using PlayHandler = std::function<bool(const String&, const String&, const String&, String&)>;
+    using StopHandler = std::function<void(void)>;
+    using VolumeHandler = std::function<void(uint8_t)>;
+    using SimpleHandler = std::function<void(void)>;
+    using OtaHandler = std::function<bool(bool)>;
+
+    WebServerManager();
+    void begin(
+        AppState& appState,
+        WiFiManager& wifiManager,
+        SettingsManager& settingsManager,
+        OtaManager& otaManager,
+        SettingsGetter settingsGetter,
+        SettingsSaver settingsSaver,
+        PlayHandler playHandler,
+        StopHandler stopHandler,
+        VolumeHandler volumeHandler,
+        OtaHandler otaHandler,
+        SimpleHandler rebootHandler,
+        SimpleHandler factoryResetHandler);
+
+  private:
+    AsyncWebServer server_;
+    AppState* appState_ = nullptr;
+    WiFiManager* wifiManager_ = nullptr;
+    SettingsManager* settingsManager_ = nullptr;
+    OtaManager* otaManager_ = nullptr;
+    SettingsGetter settingsGetter_;
+    SettingsSaver settingsSaver_;
+    PlayHandler playHandler_;
+    StopHandler stopHandler_;
+    VolumeHandler volumeHandler_;
+    OtaHandler otaHandler_;
+    SimpleHandler rebootHandler_;
+    SimpleHandler factoryResetHandler_;
+
+    bool ensureAuthorized(AsyncWebServerRequest* request);
+    bool redirectCaptivePortalIfNeeded(AsyncWebServerRequest* request);
+    void sendJson(AsyncWebServerRequest* request, const JsonDocument& doc, int statusCode = 200);
+    void registerApiRoutes();
+    void registerWebRoutes();
+};

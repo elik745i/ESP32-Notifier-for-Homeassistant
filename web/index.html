@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ESP32 Notifier</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main class="wrap">
+    <section class="hero">
+      <div class="hero-header">
+        <p class="eyebrow">ESP32 Wi-Fi Audio Endpoint</p>
+        <h1 id="friendlyName">ESP32 Notifier</h1>
+        <div id="connectionState">Loading device status...</div>
+      </div>
+      <div class="stats">
+        <div class="stat">
+          <div class="stat-label">Wi-Fi</div>
+          <div class="stat-value" id="wifiPill">-</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">MQTT</div>
+          <div class="stat-value" id="mqttPill">-</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Playback</div>
+          <div class="stat-value" id="audioPill">-</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">OTA</div>
+          <div class="stat-value" id="otaPill">-</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <article class="panel">
+        <h2>Status</h2>
+        <dl>
+          <div><dt>IP</dt><dd id="ipAddress">-</dd></div>
+          <div><dt>Wi-Fi RSSI</dt><dd id="wifiRssi">-</dd></div>
+          <div><dt>MQTT</dt><dd id="mqttStatus">-</dd></div>
+          <div><dt>Firmware</dt><dd id="firmwareVersion">-</dd></div>
+        </dl>
+      </article>
+      <article class="panel">
+        <h2>Power</h2>
+        <dl>
+          <div><dt>Battery</dt><dd id="batteryVoltage">-</dd></div>
+          <div><dt>Raw ADC</dt><dd id="batteryRaw">-</dd></div>
+          <div><dt>Heap</dt><dd id="freeHeap">-</dd></div>
+          <div><dt>Settings Source</dt><dd id="settingsSource">-</dd></div>
+        </dl>
+      </article>
+      <article class="panel">
+        <h2>Playback</h2>
+        <dl>
+          <div><dt>State</dt><dd id="playbackState">-</dd></div>
+          <div><dt>Type</dt><dd id="playbackType">-</dd></div>
+          <div><dt>Current</dt><dd id="currentTitle">-</dd></div>
+          <div><dt>URL</dt><dd id="currentUrl">-</dd></div>
+        </dl>
+      </article>
+      <article class="panel">
+        <h2>Audio Control</h2>
+        <form id="playForm">
+          <label>
+            URL
+            <input id="playUrl" name="url" type="url" placeholder="https://example.com/stream.mp3" required>
+          </label>
+          <label>
+            Label
+            <input id="playLabel" name="label" type="text" placeholder="Optional title">
+          </label>
+          <label>
+            Type
+            <select id="playType" name="type">
+              <option value="stream">Stream</option>
+              <option value="tts">TTS</option>
+              <option value="media">Media</option>
+            </select>
+          </label>
+          <div class="actions">
+            <button type="submit">Play</button>
+            <button type="button" id="stopButton" class="secondary">Stop</button>
+          </div>
+        </form>
+        <div class="volume-card">
+          <label for="volumeSlider">Volume <span id="volumeValue">0%</span></label>
+          <input id="volumeSlider" type="range" min="0" max="100" step="1">
+        </div>
+      </article>
+
+      <article class="panel">
+        <h2>Device Actions</h2>
+        <div class="actions">
+          <button id="checkOtaButton">Check OTA</button>
+          <button id="applyOtaButton" class="secondary">Install OTA</button>
+          <button id="rebootButton" class="secondary">Reboot</button>
+          <button id="factoryResetButton" class="danger">Factory Reset</button>
+        </div>
+        <pre id="otaStatus" class="log-box">Waiting for status...</pre>
+      </article>
+      <section class="panel panel-wide form-panel">
+        <h2>Configuration</h2>
+        <form id="settingsForm">
+          <div class="form-grid">
+          <fieldset>
+            <legend>Wi-Fi</legend>
+            <label>SSID <input name="wifi.ssid" type="text"></label>
+            <label>Password <div class="password-field"><input name="wifi.password" type="password" autocomplete="new-password"></div></label>
+            <label class="checkbox"><input name="wifi.apFallbackEnabled" type="checkbox"> Enable AP fallback</label>
+            <label class="checkbox"><input name="wifi.useStaticIp" type="checkbox"> Use static IP</label>
+            <label>Static IP <input name="wifi.staticIp" type="text" placeholder="192.168.1.80"></label>
+            <label>Gateway <input name="wifi.gateway" type="text"></label>
+            <label>Subnet <input name="wifi.subnet" type="text"></label>
+            <label>DNS 1 <input name="wifi.dns1" type="text"></label>
+            <label>DNS 2 <input name="wifi.dns2" type="text"></label>
+          </fieldset>
+
+          <fieldset>
+            <legend>MQTT</legend>
+            <label>Host <input name="mqtt.host" type="text"></label>
+            <label>Port <input name="mqtt.port" type="number" min="1" max="65535"></label>
+            <label>Username <input name="mqtt.username" type="text"></label>
+            <label>Password <div class="password-field"><input name="mqtt.password" type="password" autocomplete="new-password"></div></label>
+            <label>Client ID <input name="mqtt.clientId" type="text"></label>
+            <label>Base Topic <input name="mqtt.baseTopic" type="text"></label>
+            <label class="checkbox"><input name="mqtt.discoveryEnabled" type="checkbox"> Home Assistant discovery</label>
+          </fieldset>
+
+          <fieldset>
+            <legend>Device</legend>
+            <label>Device Name <input name="device.deviceName" type="text"></label>
+            <label>Friendly Name <input name="device.friendlyName" type="text"></label>
+            <label>Saved Volume % <input name="device.savedVolumePercent" type="number" min="0" max="100"></label>
+          </fieldset>
+
+          <fieldset>
+            <legend>Battery</legend>
+            <label>Divider Ratio <input name="battery.dividerRatio" type="number" step="0.001"></label>
+            <label>Calibration Multiplier <input name="battery.calibrationMultiplier" type="number" step="0.001"></label>
+            <label>Smoothing Alpha <input name="battery.smoothingAlpha" type="number" min="0.01" max="1" step="0.01"></label>
+            <label>Min Clamp <input name="battery.minVoltageClamp" type="number" step="0.01"></label>
+            <label>Max Clamp <input name="battery.maxVoltageClamp" type="number" step="0.01"></label>
+            <label>Interval ms <input name="battery.updateIntervalMs" type="number" min="500"></label>
+            <label>Sample Count <input name="battery.sampleCount" type="number" min="1" max="32"></label>
+          </fieldset>
+
+          <fieldset>
+            <legend>OTA</legend>
+            <label>Owner <input name="ota.owner" type="text"></label>
+            <label>Repository <input name="ota.repository" type="text"></label>
+            <label>Channel <input name="ota.channel" type="text"></label>
+            <label>Asset Template <input name="ota.assetTemplate" type="text"></label>
+            <label>Manifest URL <input name="ota.manifestUrl" type="url"></label>
+            <label class="checkbox"><input name="ota.allowInsecureTls" type="checkbox"> Allow insecure TLS</label>
+            <label class="checkbox"><input name="ota.autoCheck" type="checkbox"> Auto-check on boot</label>
+          </fieldset>
+
+          <fieldset>
+            <legend>Web Auth</legend>
+            <label class="checkbox"><input name="webAuth.enabled" type="checkbox"> Require login</label>
+            <label>Username <input name="webAuth.username" type="text"></label>
+            <label>Password <div class="password-field"><input name="webAuth.password" type="password" autocomplete="new-password"></div></label>
+          </fieldset>
+
+          <fieldset>
+            <legend>OLED</legend>
+            <label class="checkbox"><input name="oled.enabled" type="checkbox"> Enable OLED</label>
+            <label>Driver <select name="oled.driver"><option value="ssd1306">SSD1306</option><option value="sh1106">SH1106</option></select></label>
+            <label>I2C Address <input name="oled.i2cAddress" type="number" min="1" max="127"></label>
+            <label>Width <input name="oled.width" type="number" min="64" max="128"></label>
+            <label>Height <input name="oled.height" type="number" min="32" max="64"></label>
+            <label>SDA Pin <input name="oled.sdaPin" type="number" min="0" max="39"></label>
+            <label>SCL Pin <input name="oled.sclPin" type="number" min="0" max="39"></label>
+            <label>Reset Pin <input name="oled.resetPin" type="number" min="-1" max="39"></label>
+            <label>Dim Timeout s <input name="oled.dimTimeoutSeconds" type="number" min="0" max="3600"></label>
+          </fieldset>
+          </div>
+          <div class="actions">
+            <button type="submit">Save Settings</button>
+            <button type="button" id="reloadButton" class="secondary">Reload</button>
+          </div>
+        </form>
+      </section>
+    </section>
+  </main>
+
+  <template id="toastTemplate">
+    <div class="toast"></div>
+  </template>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>

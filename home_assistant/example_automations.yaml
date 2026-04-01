@@ -1,0 +1,22 @@
+- alias: ESP32 Notifier Apply Volume Helper
+  trigger:
+    - platform: state
+      entity_id: input_number.esp32_notifier_volume
+  action:
+    - action: script.esp32_notifier_set_volume
+      data:
+        volume: "{{ trigger.to_state.state | int }}"
+
+- alias: ESP32 Notifier Play URL Helper
+  trigger:
+    - platform: state
+      entity_id: input_text.esp32_notifier_play_url
+  condition:
+    - condition: template
+      value_template: "{{ trigger.to_state.state | length > 4 }}"
+  action:
+    - action: script.esp32_notifier_play_url
+      data:
+        url: "{{ trigger.to_state.state }}"
+        label: Manual helper URL
+        type: stream

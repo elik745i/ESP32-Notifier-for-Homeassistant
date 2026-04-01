@@ -1,0 +1,38 @@
+esp32_notifier_play_radio:
+  alias: ESP32 Notifier Play Radio
+  mode: restart
+  sequence:
+    - action: script.esp32_notifier_play_url
+      data:
+        url: https://stream.live.vc.bbcmedia.co.uk/bbc_radio_fourlw_online_nonuk
+        label: BBC Radio 4
+        type: stream
+
+esp32_notifier_play_mp3:
+  alias: ESP32 Notifier Play MP3 URL
+  mode: restart
+  fields:
+    url:
+      required: true
+      selector:
+        text:
+  sequence:
+    - action: script.esp32_notifier_play_url
+      data:
+        url: "{{ url }}"
+        label: On-demand audio
+        type: media
+
+esp32_notifier_doorbell_tts_url:
+  alias: ESP32 Notifier Doorbell TTS URL
+  mode: restart
+  fields:
+    tts_url:
+      required: true
+      selector:
+        text:
+  sequence:
+    - action: script.esp32_notifier_speak_url
+      data:
+        tts_url: "{{ tts_url }}"
+        preview: Someone is at the door

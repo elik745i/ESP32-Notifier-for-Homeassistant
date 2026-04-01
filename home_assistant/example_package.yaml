@@ -1,0 +1,134 @@
+input_text:
+  esp32_notifier_play_url:
+    name: ESP32 Notifier URL
+    max: 255
+
+input_number:
+  esp32_notifier_volume:
+    name: ESP32 Notifier Volume
+    min: 0
+    max: 100
+    step: 1
+
+sensor:
+  - platform: mqtt
+    name: ESP32 Notifier Playback State
+    unique_id: esp32_notifier_playback_state_package
+    state_topic: esp32_notifier/state/playback
+    value_template: "{{ value_json.state }}"
+
+  - platform: mqtt
+    name: ESP32 Notifier Current Title
+    unique_id: esp32_notifier_current_title_package
+    state_topic: esp32_notifier/state/playback
+    value_template: "{{ value_json.title }}"
+
+  - platform: mqtt
+    name: ESP32 Notifier Battery Voltage
+    unique_id: esp32_notifier_battery_voltage_package
+    state_topic: esp32_notifier/state/battery
+    device_class: voltage
+    unit_of_measurement: V
+    state_class: measurement
+    value_template: "{{ value_json.voltage }}"
+
+  - platform: mqtt
+    name: ESP32 Notifier Wi-Fi RSSI
+    unique_id: esp32_notifier_wifi_rssi_package
+    state_topic: esp32_notifier/state/network
+    device_class: signal_strength
+    unit_of_measurement: dBm
+    state_class: measurement
+    value_template: "{{ value_json.wifiRssi }}"
+
+binary_sensor:
+  - platform: mqtt
+    name: ESP32 Notifier Online
+    unique_id: esp32_notifier_online_package
+    state_topic: esp32_notifier/availability
+    payload_on: online
+    payload_off: offline
+
+script:
+  esp32_notifier_play_url:
+    alias: ESP32 Notifier Play URL
+    mode: restart
+    fields:
+      url:
+        required: true
+        selector:
+          text:
+      label:
+        selector:
+          text:
+      type:
+        selector:
+          select:
+            options:
+              - stream
+              - media
+              - tts
+    sequence:
+      - action: mqtt.publish
+        data:
+          topic: esp32_notifier/cmd/play
+          qos: 1
+          retain: false
+          payload: >-
+            {{ {
+              'url': url,
+              'label': label | default('', true),
+              'type': type | default('stream', true)
+            } | tojson }}
+
+  esp32_notifier_stop:
+    alias: ESP32 Notifier Stop
+    sequence:
+      - action: mqtt.publish
+        data:
+          topic: esp32_notifier/cmd/stop
+          qos: 1
+          payload: stop
+
+  esp32_notifier_set_volume:
+    alias: ESP32 Notifier Set Volume
+    fields:
+      volume:
+        required: true
+        selector:
+          number:
+            min: 0
+            max: 100
+            step: 1
+    sequence:
+      - action: mqtt.publish
+        data:
+          topic: esp32_notifier/cmd/volume
+          qos: 1
+          payload: >-
+            {{ {'volumePercent': volume | int } | tojson }}
+
+  esp32_notifier_speak_url:
+    alias: ESP32 Notifier Speak From URL
+    description: Use this when your TTS engine already exposes a direct MP3/HTTP URL.
+    mode: restart
+    fields:
+      tts_url:
+        required: true
+        selector:
+          text:
+      preview:
+        selector:
+          text:
+    sequence:
+      - action: mqtt.publish
+        data:
+          topic: esp32_notifier/cmd/tts
+          qos: 1
+          retain: false
+          payload: >-
+            {{ {
+              'url': tts_url,
+              'label': preview | default('TTS', true),
+              'type': 'tts'
+            } | tojson }}

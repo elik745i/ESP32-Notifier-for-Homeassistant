@@ -1,0 +1,463 @@
+#include "settings_manager.h"
+
+#include "default_config.h"
+
+namespace {
+constexpr char PREF_NAMESPACE[] = "notifier";
+constexpr char PREF_MARKER[] = "saved";
+
+template <typename T>
+T clampValue(T value, T low, T high) {
+    if (value < low) {
+        return low;
+    }
+    if (value > high) {
+        return high;
+    }
+    return value;
+}
+
+String fallbackIfEmpty(const String& value, const String& fallback) {
+    return value.isEmpty() ? fallback : value;
+}
+}  // namespace
+
+bool SettingsManager::begin() {
+    return preferences_.begin(PREF_NAMESPACE, false);
+}
+
+SettingsBundle SettingsManager::defaults() const {
+    SettingsBundle settings;
+    settings.wifi.ssid = DefaultConfig::WIFI_SSID;
+    settings.wifi.password = DefaultConfig::WIFI_PASSWORD;
+    settings.wifi.apFallbackEnabled = DefaultConfig::WIFI_AP_FALLBACK_ENABLED;
+
+    settings.mqtt.host = DefaultConfig::MQTT_HOST;
+    settings.mqtt.port = DefaultConfig::MQTT_PORT;
+    settings.mqtt.username = DefaultConfig::MQTT_USERNAME;
+    settings.mqtt.password = DefaultConfig::MQTT_PASSWORD;
+    settings.mqtt.baseTopic = DefaultConfig::MQTT_BASE_TOPIC;
+    settings.mqtt.discoveryEnabled = DefaultConfig::MQTT_DISCOVERY_ENABLED;
+
+    settings.ota.owner = DefaultConfig::OTA_OWNER;
+    settings.ota.repository = DefaultConfig::OTA_REPOSITORY;
+    settings.ota.channel = DefaultConfig::OTA_CHANNEL;
+    settings.ota.assetTemplate = DefaultConfig::OTA_ASSET_TEMPLATE;
+    settings.ota.manifestUrl = DefaultConfig::OTA_MANIFEST_URL;
+    settings.ota.allowInsecureTls = DefaultConfig::OTA_ALLOW_INSECURE_TLS;
+
+    settings.battery.dividerRatio = DefaultConfig::BATTERY_DIVIDER_RATIO;
+    settings.battery.calibrationMultiplier = DefaultConfig::BATTERY_CALIBRATION;
+    settings.battery.smoothingAlpha = DefaultConfig::BATTERY_ALPHA;
+    settings.battery.minVoltageClamp = DefaultConfig::BATTERY_MIN_VOLTAGE;
+    settings.battery.maxVoltageClamp = DefaultConfig::BATTERY_MAX_VOLTAGE;
+    settings.battery.updateIntervalMs = DefaultConfig::BATTERY_UPDATE_INTERVAL_MS;
+    settings.battery.sampleCount = DefaultConfig::BATTERY_SAMPLE_COUNT;
+
+    settings.webAuth.enabled = DefaultConfig::WEB_AUTH_ENABLED;
+    settings.webAuth.username = DefaultConfig::WEB_USERNAME;
+    settings.webAuth.password = DefaultConfig::WEB_PASSWORD;
+
+    settings.oled.enabled = DefaultConfig::OLED_ENABLED;
+    settings.oled.driver = DefaultConfig::OLED_DRIVER;
+    settings.oled.i2cAddress = DefaultConfig::OLED_I2C_ADDRESS;
+    settings.oled.width = DefaultConfig::OLED_WIDTH;
+    settings.oled.height = DefaultConfig::OLED_HEIGHT;
+    settings.oled.sdaPin = DefaultConfig::OLED_SDA_PIN;
+    settings.oled.sclPin = DefaultConfig::OLED_SCL_PIN;
+    settings.oled.resetPin = DefaultConfig::OLED_RESET_PIN;
+    settings.oled.dimTimeoutSeconds = DefaultConfig::OLED_DIM_TIMEOUT_SECONDS;
+
+    settings.device.deviceName = DefaultConfig::DEVICE_NAME;
+    settings.device.friendlyName = DefaultConfig::FRIENDLY_NAME;
+    settings.device.savedVolumePercent = DefaultConfig::DEFAULT_VOLUME_PERCENT;
+    settings.usingSavedSettings = false;
+    return settings;
+}
+
+SettingsBundle SettingsManager::sanitize(const SettingsBundle& input) const {
+    SettingsBundle settings = input;
+    settings.device.deviceName.trim();
+    settings.device.friendlyName.trim();
+    settings.mqtt.baseTopic.trim();
+    settings.mqtt.host.trim();
+    settings.ota.owner.trim();
+    settings.ota.repository.trim();
+    settings.ota.channel.trim();
+    settings.ota.assetTemplate.trim();
+    settings.ota.manifestUrl.trim();
+    settings.webAuth.username.trim();
+
+    if (settings.device.deviceName.isEmpty()) {
+        settings.device.deviceName = DefaultConfig::DEVICE_NAME;
+    }
+    if (settings.device.friendlyName.isEmpty()) {
+        settings.device.friendlyName = settings.device.deviceName;
+    }
+    if (settings.mqtt.baseTopic.isEmpty()) {
+        settings.mqtt.baseTopic = DefaultConfig::MQTT_BASE_TOPIC;
+    }
+    if (settings.mqtt.port == 0) {
+        settings.mqtt.port = DefaultConfig::MQTT_PORT;
+    }
+    if (settings.device.savedVolumePercent > 100) {
+        settings.device.savedVolumePercent = 100;
+    }
+    settings.battery.dividerRatio = settings.battery.dividerRatio < 1.0f ? 1.0f : settings.battery.dividerRatio;
+    settings.battery.calibrationMultiplier = clampValue<float>(settings.battery.calibrationMultiplier, 0.1f, 4.0f);
+    settings.battery.smoothingAlpha = clampValue<float>(settings.battery.smoothingAlpha, 0.01f, 1.0f);
+    settings.battery.minVoltageClamp = clampValue<float>(settings.battery.minVoltageClamp, 1.0f, 5.0f);
+    settings.battery.maxVoltageClamp = clampValue<float>(settings.battery.maxVoltageClamp, settings.battery.minVoltageClamp, 6.0f);
+    settings.battery.updateIntervalMs = settings.battery.updateIntervalMs < 500 ? 500 : settings.battery.updateIntervalMs;
+    settings.battery.sampleCount = clampValue<uint16_t>(settings.battery.sampleCount, static_cast<uint16_t>(1), static_cast<uint16_t>(32));
+    settings.oled.driver.toLowerCase();
+    if (settings.oled.driver != "ssd1306" && settings.oled.driver != "sh1106") {
+        settings.oled.driver = "ssd1306";
+    }
+    settings.oled.i2cAddress = clampValue<uint8_t>(settings.oled.i2cAddress, static_cast<uint8_t>(1), static_cast<uint8_t>(127));
+    settings.oled.width = clampValue<uint8_t>(settings.oled.width, static_cast<uint8_t>(64), static_cast<uint8_t>(128));
+    settings.oled.height = clampValue<uint8_t>(settings.oled.height, static_cast<uint8_t>(32), static_cast<uint8_t>(64));
+    settings.oled.dimTimeoutSeconds = clampValue<uint16_t>(settings.oled.dimTimeoutSeconds, static_cast<uint16_t>(0), static_cast<uint16_t>(3600));
+    settings.usingSavedSettings = input.usingSavedSettings;
+    return settings;
+}
+
+SettingsBundle SettingsManager::load() {
+    SettingsBundle settings = defaults();
+    settings.usingSavedSettings = readBool(PREF_MARKER, false);
+    if (!settings.usingSavedSettings) {
+        settings.mqtt.clientId = settings.device.deviceName;
+        return sanitize(settings);
+    }
+
+    settings.wifi.ssid = readString("wifi_ssid", settings.wifi.ssid);
+    settings.wifi.password = readString("wifi_pass", settings.wifi.password);
+    settings.wifi.apFallbackEnabled = readBool("wifi_apfb", settings.wifi.apFallbackEnabled);
+    settings.wifi.useStaticIp = readBool("wifi_static", settings.wifi.useStaticIp);
+    settings.wifi.staticIp = readString("wifi_ip", settings.wifi.staticIp);
+    settings.wifi.gateway = readString("wifi_gw", settings.wifi.gateway);
+    settings.wifi.subnet = readString("wifi_sub", settings.wifi.subnet);
+    settings.wifi.dns1 = readString("wifi_dns1", settings.wifi.dns1);
+    settings.wifi.dns2 = readString("wifi_dns2", settings.wifi.dns2);
+
+    settings.mqtt.host = readString("mqtt_host", settings.mqtt.host);
+    settings.mqtt.port = readUInt("mqtt_port", settings.mqtt.port);
+    settings.mqtt.username = readString("mqtt_user", settings.mqtt.username);
+    settings.mqtt.password = readString("mqtt_pass", settings.mqtt.password);
+    settings.mqtt.clientId = readString("mqtt_cid", settings.device.deviceName);
+    settings.mqtt.baseTopic = readString("mqtt_base", settings.mqtt.baseTopic);
+    settings.mqtt.discoveryEnabled = readBool("mqtt_disc", settings.mqtt.discoveryEnabled);
+
+    settings.ota.owner = readString("ota_owner", settings.ota.owner);
+    settings.ota.repository = readString("ota_repo", settings.ota.repository);
+    settings.ota.channel = readString("ota_chan", settings.ota.channel);
+    settings.ota.assetTemplate = readString("ota_asset", settings.ota.assetTemplate);
+    settings.ota.manifestUrl = readString("ota_manifest", settings.ota.manifestUrl);
+    settings.ota.allowInsecureTls = readBool("ota_tls", settings.ota.allowInsecureTls);
+    settings.ota.autoCheck = readBool("ota_auto", settings.ota.autoCheck);
+
+    settings.battery.dividerRatio = readFloat("bat_div", settings.battery.dividerRatio);
+    settings.battery.calibrationMultiplier = readFloat("bat_cal", settings.battery.calibrationMultiplier);
+    settings.battery.smoothingAlpha = readFloat("bat_alpha", settings.battery.smoothingAlpha);
+    settings.battery.minVoltageClamp = readFloat("bat_min", settings.battery.minVoltageClamp);
+    settings.battery.maxVoltageClamp = readFloat("bat_max", settings.battery.maxVoltageClamp);
+    settings.battery.updateIntervalMs = readUInt("bat_int", settings.battery.updateIntervalMs);
+    settings.battery.sampleCount = readUInt("bat_samp", settings.battery.sampleCount);
+
+    settings.webAuth.enabled = readBool("web_auth", settings.webAuth.enabled);
+    settings.webAuth.username = readString("web_user", settings.webAuth.username);
+    settings.webAuth.password = readString("web_pass", settings.webAuth.password);
+
+    settings.oled.enabled = readBool("oled_en", settings.oled.enabled);
+    settings.oled.driver = readString("oled_drv", settings.oled.driver);
+    settings.oled.i2cAddress = readUInt("oled_addr", settings.oled.i2cAddress);
+    settings.oled.width = readUInt("oled_w", settings.oled.width);
+    settings.oled.height = readUInt("oled_h", settings.oled.height);
+    settings.oled.sdaPin = readUInt("oled_sda", settings.oled.sdaPin);
+    settings.oled.sclPin = readUInt("oled_scl", settings.oled.sclPin);
+    settings.oled.resetPin = readInt("oled_rst", settings.oled.resetPin);
+    settings.oled.dimTimeoutSeconds = readUInt("oled_dim", settings.oled.dimTimeoutSeconds);
+
+    settings.device.deviceName = readString("dev_name", settings.device.deviceName);
+    settings.device.friendlyName = readString("dev_friendly", settings.device.friendlyName);
+    settings.device.savedVolumePercent = readUInt("dev_vol", settings.device.savedVolumePercent);
+
+    settings = sanitize(settings);
+    settings.mqtt.clientId = fallbackIfEmpty(settings.mqtt.clientId, settings.device.deviceName);
+    settings.usingSavedSettings = true;
+    return settings;
+}
+
+bool SettingsManager::save(const SettingsBundle& settings) {
+    const SettingsBundle sanitized = sanitize(settings);
+    bool changed = false;
+    changed |= writeStringIfChanged("wifi_ssid", sanitized.wifi.ssid);
+    changed |= writeStringIfChanged("wifi_pass", sanitized.wifi.password);
+    changed |= writeBoolIfChanged("wifi_apfb", sanitized.wifi.apFallbackEnabled);
+    changed |= writeBoolIfChanged("wifi_static", sanitized.wifi.useStaticIp);
+    changed |= writeStringIfChanged("wifi_ip", sanitized.wifi.staticIp);
+    changed |= writeStringIfChanged("wifi_gw", sanitized.wifi.gateway);
+    changed |= writeStringIfChanged("wifi_sub", sanitized.wifi.subnet);
+    changed |= writeStringIfChanged("wifi_dns1", sanitized.wifi.dns1);
+    changed |= writeStringIfChanged("wifi_dns2", sanitized.wifi.dns2);
+
+    changed |= writeStringIfChanged("mqtt_host", sanitized.mqtt.host);
+    changed |= writeUIntIfChanged("mqtt_port", sanitized.mqtt.port);
+    changed |= writeStringIfChanged("mqtt_user", sanitized.mqtt.username);
+    changed |= writeStringIfChanged("mqtt_pass", sanitized.mqtt.password);
+    changed |= writeStringIfChanged("mqtt_cid", fallbackIfEmpty(sanitized.mqtt.clientId, sanitized.device.deviceName));
+    changed |= writeStringIfChanged("mqtt_base", sanitized.mqtt.baseTopic);
+    changed |= writeBoolIfChanged("mqtt_disc", sanitized.mqtt.discoveryEnabled);
+
+    changed |= writeStringIfChanged("ota_owner", sanitized.ota.owner);
+    changed |= writeStringIfChanged("ota_repo", sanitized.ota.repository);
+    changed |= writeStringIfChanged("ota_chan", sanitized.ota.channel);
+    changed |= writeStringIfChanged("ota_asset", sanitized.ota.assetTemplate);
+    changed |= writeStringIfChanged("ota_manifest", sanitized.ota.manifestUrl);
+    changed |= writeBoolIfChanged("ota_tls", sanitized.ota.allowInsecureTls);
+    changed |= writeBoolIfChanged("ota_auto", sanitized.ota.autoCheck);
+
+    changed |= writeFloatIfChanged("bat_div", sanitized.battery.dividerRatio);
+    changed |= writeFloatIfChanged("bat_cal", sanitized.battery.calibrationMultiplier);
+    changed |= writeFloatIfChanged("bat_alpha", sanitized.battery.smoothingAlpha);
+    changed |= writeFloatIfChanged("bat_min", sanitized.battery.minVoltageClamp);
+    changed |= writeFloatIfChanged("bat_max", sanitized.battery.maxVoltageClamp);
+    changed |= writeUIntIfChanged("bat_int", sanitized.battery.updateIntervalMs);
+    changed |= writeUIntIfChanged("bat_samp", sanitized.battery.sampleCount);
+
+    changed |= writeBoolIfChanged("web_auth", sanitized.webAuth.enabled);
+    changed |= writeStringIfChanged("web_user", sanitized.webAuth.username);
+    changed |= writeStringIfChanged("web_pass", sanitized.webAuth.password);
+
+    changed |= writeBoolIfChanged("oled_en", sanitized.oled.enabled);
+    changed |= writeStringIfChanged("oled_drv", sanitized.oled.driver);
+    changed |= writeUIntIfChanged("oled_addr", sanitized.oled.i2cAddress);
+    changed |= writeUIntIfChanged("oled_w", sanitized.oled.width);
+    changed |= writeUIntIfChanged("oled_h", sanitized.oled.height);
+    changed |= writeUIntIfChanged("oled_sda", sanitized.oled.sdaPin);
+    changed |= writeUIntIfChanged("oled_scl", sanitized.oled.sclPin);
+    changed |= writeIntIfChanged("oled_rst", sanitized.oled.resetPin);
+    changed |= writeUIntIfChanged("oled_dim", sanitized.oled.dimTimeoutSeconds);
+
+    changed |= writeStringIfChanged("dev_name", sanitized.device.deviceName);
+    changed |= writeStringIfChanged("dev_friendly", sanitized.device.friendlyName);
+    changed |= writeUIntIfChanged("dev_vol", sanitized.device.savedVolumePercent);
+    changed |= writeBoolIfChanged(PREF_MARKER, true);
+    return changed;
+}
+
+bool SettingsManager::reset() {
+    return preferences_.clear();
+}
+
+void SettingsManager::toJson(const SettingsBundle& settings, JsonObject root) const {
+    JsonObject wifi = root["wifi"].to<JsonObject>();
+    wifi["ssid"] = settings.wifi.ssid;
+    wifi["password"] = settings.wifi.password;
+    wifi["apFallbackEnabled"] = settings.wifi.apFallbackEnabled;
+    wifi["useStaticIp"] = settings.wifi.useStaticIp;
+    wifi["staticIp"] = settings.wifi.staticIp;
+    wifi["gateway"] = settings.wifi.gateway;
+    wifi["subnet"] = settings.wifi.subnet;
+    wifi["dns1"] = settings.wifi.dns1;
+    wifi["dns2"] = settings.wifi.dns2;
+
+    JsonObject mqtt = root["mqtt"].to<JsonObject>();
+    mqtt["host"] = settings.mqtt.host;
+    mqtt["port"] = settings.mqtt.port;
+    mqtt["username"] = settings.mqtt.username;
+    mqtt["password"] = settings.mqtt.password;
+    mqtt["clientId"] = settings.mqtt.clientId;
+    mqtt["baseTopic"] = settings.mqtt.baseTopic;
+    mqtt["discoveryEnabled"] = settings.mqtt.discoveryEnabled;
+
+    JsonObject ota = root["ota"].to<JsonObject>();
+    ota["owner"] = settings.ota.owner;
+    ota["repository"] = settings.ota.repository;
+    ota["channel"] = settings.ota.channel;
+    ota["assetTemplate"] = settings.ota.assetTemplate;
+    ota["manifestUrl"] = settings.ota.manifestUrl;
+    ota["allowInsecureTls"] = settings.ota.allowInsecureTls;
+    ota["autoCheck"] = settings.ota.autoCheck;
+
+    JsonObject battery = root["battery"].to<JsonObject>();
+    battery["dividerRatio"] = settings.battery.dividerRatio;
+    battery["calibrationMultiplier"] = settings.battery.calibrationMultiplier;
+    battery["smoothingAlpha"] = settings.battery.smoothingAlpha;
+    battery["minVoltageClamp"] = settings.battery.minVoltageClamp;
+    battery["maxVoltageClamp"] = settings.battery.maxVoltageClamp;
+    battery["updateIntervalMs"] = settings.battery.updateIntervalMs;
+    battery["sampleCount"] = settings.battery.sampleCount;
+
+    JsonObject webAuth = root["webAuth"].to<JsonObject>();
+    webAuth["enabled"] = settings.webAuth.enabled;
+    webAuth["username"] = settings.webAuth.username;
+    webAuth["password"] = settings.webAuth.password;
+
+    JsonObject oled = root["oled"].to<JsonObject>();
+    oled["enabled"] = settings.oled.enabled;
+    oled["driver"] = settings.oled.driver;
+    oled["i2cAddress"] = settings.oled.i2cAddress;
+    oled["width"] = settings.oled.width;
+    oled["height"] = settings.oled.height;
+    oled["sdaPin"] = settings.oled.sdaPin;
+    oled["sclPin"] = settings.oled.sclPin;
+    oled["resetPin"] = settings.oled.resetPin;
+    oled["dimTimeoutSeconds"] = settings.oled.dimTimeoutSeconds;
+
+    JsonObject device = root["device"].to<JsonObject>();
+    device["deviceName"] = settings.device.deviceName;
+    device["friendlyName"] = settings.device.friendlyName;
+    device["savedVolumePercent"] = settings.device.savedVolumePercent;
+    root["usingSavedSettings"] = settings.usingSavedSettings;
+}
+
+bool SettingsManager::updateFromJson(SettingsBundle& settings, JsonVariantConst root, String& error) const {
+    if (!root.is<JsonObjectConst>()) {
+        error = "Expected JSON object";
+        return false;
+    }
+
+    JsonObjectConst object = root.as<JsonObjectConst>();
+    auto copyString = [](JsonObjectConst section, const char* key, String& target) {
+        if (section[key].is<const char*>()) {
+            target = section[key].as<const char*>();
+        }
+    };
+
+    JsonObjectConst wifi = object["wifi"];
+    if (!wifi.isNull()) {
+        copyString(wifi, "ssid", settings.wifi.ssid);
+        copyString(wifi, "password", settings.wifi.password);
+        copyString(wifi, "staticIp", settings.wifi.staticIp);
+        copyString(wifi, "gateway", settings.wifi.gateway);
+        copyString(wifi, "subnet", settings.wifi.subnet);
+        copyString(wifi, "dns1", settings.wifi.dns1);
+        copyString(wifi, "dns2", settings.wifi.dns2);
+        if (wifi["apFallbackEnabled"].is<bool>()) settings.wifi.apFallbackEnabled = wifi["apFallbackEnabled"].as<bool>();
+        if (wifi["useStaticIp"].is<bool>()) settings.wifi.useStaticIp = wifi["useStaticIp"].as<bool>();
+    }
+
+    JsonObjectConst mqtt = object["mqtt"];
+    if (!mqtt.isNull()) {
+        copyString(mqtt, "host", settings.mqtt.host);
+        copyString(mqtt, "username", settings.mqtt.username);
+        copyString(mqtt, "password", settings.mqtt.password);
+        copyString(mqtt, "clientId", settings.mqtt.clientId);
+        copyString(mqtt, "baseTopic", settings.mqtt.baseTopic);
+        if (mqtt["port"].is<uint16_t>()) settings.mqtt.port = mqtt["port"].as<uint16_t>();
+        if (mqtt["discoveryEnabled"].is<bool>()) settings.mqtt.discoveryEnabled = mqtt["discoveryEnabled"].as<bool>();
+    }
+
+    JsonObjectConst ota = object["ota"];
+    if (!ota.isNull()) {
+        copyString(ota, "owner", settings.ota.owner);
+        copyString(ota, "repository", settings.ota.repository);
+        copyString(ota, "channel", settings.ota.channel);
+        copyString(ota, "assetTemplate", settings.ota.assetTemplate);
+        copyString(ota, "manifestUrl", settings.ota.manifestUrl);
+        if (ota["allowInsecureTls"].is<bool>()) settings.ota.allowInsecureTls = ota["allowInsecureTls"].as<bool>();
+        if (ota["autoCheck"].is<bool>()) settings.ota.autoCheck = ota["autoCheck"].as<bool>();
+    }
+
+    JsonObjectConst battery = object["battery"];
+    if (!battery.isNull()) {
+        if (battery["dividerRatio"].is<float>()) settings.battery.dividerRatio = battery["dividerRatio"].as<float>();
+        if (battery["calibrationMultiplier"].is<float>()) settings.battery.calibrationMultiplier = battery["calibrationMultiplier"].as<float>();
+        if (battery["smoothingAlpha"].is<float>()) settings.battery.smoothingAlpha = battery["smoothingAlpha"].as<float>();
+        if (battery["minVoltageClamp"].is<float>()) settings.battery.minVoltageClamp = battery["minVoltageClamp"].as<float>();
+        if (battery["maxVoltageClamp"].is<float>()) settings.battery.maxVoltageClamp = battery["maxVoltageClamp"].as<float>();
+        if (battery["updateIntervalMs"].is<uint32_t>()) settings.battery.updateIntervalMs = battery["updateIntervalMs"].as<uint32_t>();
+        if (battery["sampleCount"].is<uint16_t>()) settings.battery.sampleCount = battery["sampleCount"].as<uint16_t>();
+    }
+
+    JsonObjectConst webAuth = object["webAuth"];
+    if (!webAuth.isNull()) {
+        copyString(webAuth, "username", settings.webAuth.username);
+        copyString(webAuth, "password", settings.webAuth.password);
+        if (webAuth["enabled"].is<bool>()) settings.webAuth.enabled = webAuth["enabled"].as<bool>();
+    }
+
+    JsonObjectConst oled = object["oled"];
+    if (!oled.isNull()) {
+        copyString(oled, "driver", settings.oled.driver);
+        if (oled["enabled"].is<bool>()) settings.oled.enabled = oled["enabled"].as<bool>();
+        if (oled["i2cAddress"].is<uint8_t>()) settings.oled.i2cAddress = oled["i2cAddress"].as<uint8_t>();
+        if (oled["width"].is<uint8_t>()) settings.oled.width = oled["width"].as<uint8_t>();
+        if (oled["height"].is<uint8_t>()) settings.oled.height = oled["height"].as<uint8_t>();
+        if (oled["sdaPin"].is<uint8_t>()) settings.oled.sdaPin = oled["sdaPin"].as<uint8_t>();
+        if (oled["sclPin"].is<uint8_t>()) settings.oled.sclPin = oled["sclPin"].as<uint8_t>();
+        if (oled["resetPin"].is<int8_t>()) settings.oled.resetPin = oled["resetPin"].as<int8_t>();
+        if (oled["dimTimeoutSeconds"].is<uint16_t>()) settings.oled.dimTimeoutSeconds = oled["dimTimeoutSeconds"].as<uint16_t>();
+    }
+
+    JsonObjectConst device = object["device"];
+    if (!device.isNull()) {
+        copyString(device, "deviceName", settings.device.deviceName);
+        copyString(device, "friendlyName", settings.device.friendlyName);
+        if (device["savedVolumePercent"].is<uint8_t>()) settings.device.savedVolumePercent = device["savedVolumePercent"].as<uint8_t>();
+    }
+
+    settings = sanitize(settings);
+    return true;
+}
+
+bool SettingsManager::writeStringIfChanged(const char* key, const String& value) {
+    if (preferences_.getString(key, "") == value) {
+        return false;
+    }
+    preferences_.putString(key, value);
+    return true;
+}
+
+bool SettingsManager::writeBoolIfChanged(const char* key, bool value) {
+    if (preferences_.getBool(key, !value) == value && preferences_.isKey(key)) {
+        return false;
+    }
+    preferences_.putBool(key, value);
+    return true;
+}
+
+bool SettingsManager::writeUIntIfChanged(const char* key, uint32_t value) {
+    if (preferences_.getUInt(key, value + 1) == value && preferences_.isKey(key)) {
+        return false;
+    }
+    preferences_.putUInt(key, value);
+    return true;
+}
+
+bool SettingsManager::writeIntIfChanged(const char* key, int32_t value) {
+    if (preferences_.getInt(key, value + 1) == value && preferences_.isKey(key)) {
+        return false;
+    }
+    preferences_.putInt(key, value);
+    return true;
+}
+
+bool SettingsManager::writeFloatIfChanged(const char* key, float value) {
+    if (fabsf(preferences_.getFloat(key, value + 1.0f) - value) < 0.0001f && preferences_.isKey(key)) {
+        return false;
+    }
+    preferences_.putFloat(key, value);
+    return true;
+}
+
+String SettingsManager::readString(const char* key, const String& fallback) {
+    return preferences_.getString(key, fallback);
+}
+
+bool SettingsManager::readBool(const char* key, bool fallback) {
+    return preferences_.getBool(key, fallback);
+}
+
+uint32_t SettingsManager::readUInt(const char* key, uint32_t fallback) {
+    return preferences_.getUInt(key, fallback);
+}
+
+int32_t SettingsManager::readInt(const char* key, int32_t fallback) {
+    return preferences_.getInt(key, fallback);
+}
+
+float SettingsManager::readFloat(const char* key, float fallback) {
+    return preferences_.getFloat(key, fallback);
+}
