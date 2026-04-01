@@ -18,7 +18,7 @@ class MqttManager {
     void applySettings(const SettingsBundle& settings);
     void loop();
     void publishState();
-    void publishBattery(float voltage, uint16_t rawAdc);
+    void publishBattery(float voltage, float rawAdcVoltage, uint16_t rawAdc);
     void publishDiscovery();
     bool isConnected() const;
 

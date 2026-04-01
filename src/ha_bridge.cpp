@@ -41,6 +41,18 @@ String commandTopic(const SettingsBundle& settings, const char* command) {
     return settings.mqtt.baseTopic + "/cmd/" + command;
 }
 
+String playerCommandTopic(const SettingsBundle& settings) {
+    return settings.mqtt.baseTopic + "/cmd/player";
+}
+
+String playerPlayMediaTopic(const SettingsBundle& settings) {
+    return settings.mqtt.baseTopic + "/cmd/play_media";
+}
+
+String playerVolumeStateTopic(const SettingsBundle& settings) {
+    return settings.mqtt.baseTopic + "/state/volume";
+}
+
 String entityUniqueId(const SettingsBundle& settings, const char* suffix) {
     String id = settings.device.deviceName;
     id.replace(" ", "_");
@@ -113,6 +125,29 @@ String discoveryPayloadText(const SettingsBundle& settings, const char* objectId
     doc["avty_t"] = availabilityTopic(settings);
     if (icon != nullptr) doc["ic"] = icon;
     fillDevice(settings, doc["dev"].to<JsonObject>());
+    String out;
+    serializeJson(doc, out);
+    return out;
+}
+
+String discoveryPayloadMediaPlayer(const SettingsBundle& settings, const char* objectId, const char* name, const char* icon) {
+    JsonDocument doc;
+    doc["name"] = name;
+    doc["unique_id"] = entityUniqueId(settings, objectId);
+    doc["availability_topic"] = availabilityTopic(settings);
+    doc["state_topic"] = playbackStateTopic(settings);
+    doc["state_value_template"] = "{% set s = value_json.state | default('idle') %}{% if s == 'playing' %}playing{% elif s == 'buffering' %}playing{% else %}idle{% endif %}";
+    doc["command_topic"] = playerCommandTopic(settings);
+    doc["payload_play"] = "PLAY";
+    doc["payload_stop"] = "STOP";
+    doc["play_media_topic"] = playerPlayMediaTopic(settings);
+    doc["play_media_payload_template"] = "{{ {'url': media_id, 'label': media_id, 'type': media_type} | tojson }}";
+    doc["volume_command_topic"] = commandTopic(settings, "volume");
+    doc["volume_state_topic"] = playerVolumeStateTopic(settings);
+    doc["volume_value_template"] = "{{ (value | float(0)) / 100 }}";
+    doc["json_attributes_topic"] = playbackStateTopic(settings);
+    if (icon != nullptr) doc["icon"] = icon;
+    fillDevice(settings, doc["device"].to<JsonObject>());
     String out;
     serializeJson(doc, out);
     return out;

@@ -80,15 +80,19 @@ void AppState::setBattery(float voltage, float rawAdcVoltage, uint16_t rawAdc) {
     xSemaphoreGive(mutex_);
 }
 
-void AppState::setOta(bool updateAvailable, const String& latestVersion, const String& lastResult, const String& lastError) {
+void AppState::setOta(bool busy, bool updateAvailable, const String& latestVersion, const String& lastResult, const String& lastError,
+                      const String& phase, uint8_t progressPercent) {
     if (!ensureMutex()) {
         return;
     }
     xSemaphoreTake(mutex_, portMAX_DELAY);
+    state_.ota.busy = busy;
     state_.ota.updateAvailable = updateAvailable;
     state_.ota.latestVersion = latestVersion;
     state_.ota.lastResult = lastResult;
     state_.ota.lastError = lastError;
+    state_.ota.phase = phase;
+    state_.ota.progressPercent = progressPercent;
     xSemaphoreGive(mutex_);
 }
 
@@ -149,10 +153,13 @@ void AppState::toJson(JsonObject root) const {
     battery["rawAdc"] = copy.battery.rawAdc;
 
     JsonObject ota = root["ota"].to<JsonObject>();
+    ota["busy"] = copy.ota.busy;
     ota["updateAvailable"] = copy.ota.updateAvailable;
     ota["latestVersion"] = copy.ota.latestVersion;
     ota["lastResult"] = copy.ota.lastResult;
     ota["lastError"] = copy.ota.lastError;
+    ota["phase"] = copy.ota.phase;
+    ota["progressPercent"] = copy.ota.progressPercent;
 
     JsonObject settings = root["settings"].to<JsonObject>();
     settings["usingSaved"] = copy.settings.usingSaved;

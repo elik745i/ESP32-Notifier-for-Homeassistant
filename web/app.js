@@ -2,7 +2,18 @@ const state = {
   status: null,
   settings: null,
   recentPlayback: loadRecentPlayback(),
+  wifiScanPollTimer: null,
+  firmwareProgressPollTimer: null,
+  settingsSaveTimer: null,
+  settingsDirty: false,
+  settingsLoading: false,
+  settingsSaving: false,
+  wifiConnectInProgress: false,
+  mqttConnectInProgress: false,
 };
+
+const SETTINGS_AUTOSAVE_DELAY_MS = 900;
+const ACTIVE_TAB_STORAGE_KEY = "notifierActiveTab";
 
 const elements = {
   deviceTitle: document.getElementById("deviceTitle"),
@@ -16,6 +27,8 @@ const elements = {
   firmwareVersionCard: document.getElementById("firmwareVersionCard"),
   batteryVoltage: document.getElementById("batteryVoltage"),
   batteryRaw: document.getElementById("batteryRaw"),
+  batteryMeasuredVoltage: document.getElementById("batteryMeasuredVoltage"),
+  batteryDerivedMultiplier: document.getElementById("batteryDerivedMultiplier"),
   batteryHero: document.getElementById("batteryHero"),
   freeHeap: document.getElementById("freeHeap"),
   settingsSource: document.getElementById("settingsSource"),
@@ -27,17 +40,42 @@ const elements = {
   audioPill: document.getElementById("audioPill"),
   volumeSlider: document.getElementById("volumeSlider"),
   volumeValue: document.getElementById("volumeValue"),
+  audioMutedToggle: document.getElementById("audioMutedToggle"),
+  audioMutedNote: document.getElementById("audioMutedNote"),
   otaStatus: document.getElementById("otaStatus"),
   otaStatusLabel: document.getElementById("otaStatusLabel"),
   latestVersion: document.getElementById("latestVersion"),
   otaProgressFill: document.getElementById("otaProgressFill"),
   otaProgressLabel: document.getElementById("otaProgressLabel"),
+  uploadFirmwareButton: document.getElementById("uploadFirmwareButton"),
+  localFirmwareFile: document.getElementById("localFirmwareFile"),
+  localFirmwareLabel: document.getElementById("localFirmwareLabel"),
   message: document.getElementById("message"),
   playForm: document.getElementById("playForm"),
+  playSubmitButton: document.querySelector("#playForm button[type='submit']"),
   settingsForm: document.getElementById("settingsForm"),
   recentPlaybackList: document.getElementById("recentPlaybackList"),
   useStaticIpToggle: document.getElementById("useStaticIpToggle"),
+  scanWifiButton: document.getElementById("scanWifiButton"),
+  scanStatus: document.getElementById("scanStatus"),
+  wifiNetworkList: document.getElementById("wifiNetworkList"),
+  mqttConnectButton: document.getElementById("mqttConnectButton"),
+  mqttConnectStatus: document.getElementById("mqttConnectStatus"),
+  oledPreview: document.getElementById("oledPreview"),
+  oledPreviewMeta: document.getElementById("oledPreviewMeta"),
+  oledPreviewProgress: document.getElementById("oledPreviewProgress"),
+  oledPreviewProgressLabel: document.getElementById("oledPreviewProgressLabel"),
+  oledPreviewProgressFill: document.getElementById("oledPreviewProgressFill"),
+  oledPreviewDisabled: document.getElementById("oledPreviewDisabled"),
 };
+
+function namedField(name) {
+  return elements.settingsForm.elements.namedItem(name);
+}
+
+function oledPreviewNode(selector) {
+  return elements.oledPreview?.querySelector(selector) || null;
+}
 
 function loadRecentPlayback() {
   try {
@@ -69,6 +107,181 @@ function setMessage(message, isError = false) {
   elements.message.style.color = isError ? "#b42318" : "#333333";
 }
 
+function setScanStatus(message, isError = false) {
+  elements.scanStatus.textContent = message;
+  elements.scanStatus.style.color = isError ? "#b42318" : "";
+}
+
+function setMqttConnectStatus(message, isError = false) {
+  if (!elements.mqttConnectStatus) {
+    return;
+  }
+  elements.mqttConnectStatus.textContent = message;
+  elements.mqttConnectStatus.style.color = isError ? "#b42318" : "";
+}
+
+function isNumericLikeField(field) {
+  return field?.type === "number" || field?.id === "batteryMeasuredVoltage";
+}
+
+function normalizeDecimalField(field) {
+  if (!field || !isNumericLikeField(field) || typeof field.value !== "string") {
+    return;
+  }
+  const normalized = field.value.replaceAll(",", ".");
+  if (normalized !== field.value) {
+    field.value = normalized;
+  }
+}
+
+function delay(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function settingsSubsetMatches(actual, expected) {
+  if (expected === null || typeof expected !== "object") {
+    if (typeof expected === "number") {
+      return Math.abs(Number(actual ?? 0) - expected) < 0.0005;
+    }
+    if (typeof expected === "boolean") {
+      return Boolean(actual) === expected;
+    }
+    return String(actual ?? "") === String(expected ?? "");
+  }
+
+  return Object.entries(expected).every(([key, value]) => settingsSubsetMatches(actual?.[key], value));
+}
+
+async function refreshSettingsAfterSave(expectedSettings, attempts = 8, delayMs = 250) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const loadedSettings = await request("/api/settings");
+    if (settingsSubsetMatches(loadedSettings, expectedSettings)) {
+      state.settings = loadedSettings;
+      fillForm(loadedSettings);
+      return true;
+    }
+
+    await delay(delayMs);
+  }
+
+  return false;
+}
+
+async function pollStatusUntil(predicate, attempts, delayMs) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    await loadStatus();
+    if (predicate(state.status)) {
+      return true;
+    }
+    await delay(delayMs);
+  }
+
+  return false;
+}
+
+function oledDimensions() {
+  const configuredWidth = Number(namedField("oled.width")?.value || state.settings?.oled?.width || 128);
+  const configuredHeight = Number(namedField("oled.height")?.value || state.settings?.oled?.height || 64);
+  const rotation = Number(namedField("oled.rotation")?.value || state.settings?.oled?.rotation || 0);
+  const swapped = rotation === 90 || rotation === 270;
+
+  return {
+    configuredWidth,
+    configuredHeight,
+    rotation,
+    effectiveWidth: swapped ? configuredHeight : configuredWidth,
+    effectiveHeight: swapped ? configuredWidth : configuredHeight,
+  };
+}
+
+function charsForWidth(width, textSize) {
+  return Math.max(4, Math.floor(width / (6 * textSize)));
+}
+
+function truncateOledText(text, maxChars) {
+  const value = String(text || "");
+  if (value.length <= maxChars) {
+    return value;
+  }
+  return `${value.slice(0, Math.max(0, maxChars - 1))}~`;
+}
+
+function oledCenterText(status) {
+  if (!status) {
+    return "Idle";
+  }
+  if (status.ota?.busy) {
+    return status.ota.phase || "OTA updating";
+  }
+  if (status.system?.lastError) {
+    return status.system.lastError;
+  }
+  if (status.playback?.state === "playing") {
+    return status.playback.title || status.playback.url || "Playing";
+  }
+  if (status.network?.apMode && !status.network?.wifiConnected) {
+    return "AP setup mode";
+  }
+  if (!status.network?.wifiConnected) {
+    return "Connecting Wi-Fi";
+  }
+  return "Idle";
+}
+
+function renderOledPreview() {
+  if (!elements.oledPreview) {
+    return;
+  }
+
+  const status = state.status;
+  const enabled = Boolean(namedField("oled.enabled")?.checked ?? state.settings?.oled?.enabled ?? true);
+  const { configuredWidth, configuredHeight, rotation, effectiveWidth, effectiveHeight } = oledDimensions();
+  const topChars = charsForWidth(effectiveWidth, 1);
+  const centerChars = charsForWidth(effectiveWidth, 2);
+  const bottomChars = charsForWidth(effectiveWidth, 1);
+
+  const top = status?.network?.wifiConnected
+    ? status.network.ip
+    : (status?.network?.apMode ? status.network.apSsid : "Booting");
+  const center = oledCenterText(status);
+  const bottom = `${status?.network?.wifiConnected ? "WiFi" : "AP"} ${Number(status?.battery?.voltage || 0).toFixed(2)}V ${status?.network?.mqttConnected ? "MQTT" : "noMQTT"}`;
+  const isUpdating = Boolean(status?.ota?.busy);
+  const progress = Number(status?.ota?.progressPercent || 0);
+
+  const topNode = oledPreviewNode(".oled-preview-top");
+  const centerNode = oledPreviewNode(".oled-preview-center");
+  const bottomNode = oledPreviewNode(".oled-preview-bottom");
+  if (topNode) {
+    topNode.textContent = truncateOledText(top, topChars);
+  }
+  if (centerNode) {
+    centerNode.textContent = truncateOledText(center, centerChars);
+    centerNode.hidden = isUpdating;
+  }
+  if (bottomNode) {
+    bottomNode.textContent = truncateOledText(bottom, bottomChars);
+  }
+
+  if (elements.oledPreviewProgress) {
+    elements.oledPreviewProgress.hidden = !isUpdating;
+  }
+  if (elements.oledPreviewProgressLabel) {
+    elements.oledPreviewProgressLabel.textContent = `${status?.ota?.phase || "Updating"} ${progress}%`;
+  }
+  if (elements.oledPreviewProgressFill) {
+    elements.oledPreviewProgressFill.style.width = `${Math.max(0, Math.min(100, progress))}%`;
+  }
+  if (elements.oledPreviewDisabled) {
+    elements.oledPreviewDisabled.hidden = enabled;
+  }
+
+  elements.oledPreview.style.aspectRatio = `${effectiveWidth} / ${effectiveHeight}`;
+  if (elements.oledPreviewMeta) {
+    const orientation = rotation === 90 || rotation === 270 ? "portrait" : "landscape";
+    elements.oledPreviewMeta.textContent = `${configuredWidth} x ${configuredHeight} • ${rotation} deg • ${effectiveWidth} x ${effectiveHeight} effective ${orientation}`;
+  }
+}
+
 async function request(path, options = {}) {
   const response = await fetch(path, {
     headers: { "Content-Type": "application/json" },
@@ -83,6 +296,7 @@ async function request(path, options = {}) {
 }
 
 function fillForm(data) {
+  state.settingsLoading = true;
   for (const [section, sectionValue] of Object.entries(data)) {
     if (sectionValue === null || typeof sectionValue !== "object") {
       continue;
@@ -99,7 +313,59 @@ function fillForm(data) {
       }
     }
   }
+  const measuredVoltage = state.status?.battery?.voltage ?? (data.battery?.calibrationMultiplier && state.status?.battery?.rawAdcVoltage
+    ? data.battery.calibrationMultiplier * state.status.battery.rawAdcVoltage
+    : "");
+  if (elements.batteryMeasuredVoltage && measuredVoltage) {
+    elements.batteryMeasuredVoltage.value = Number(measuredVoltage).toFixed(3);
+  }
+  updateDerivedBatteryCalibration();
+  updateAudioUiState();
   updateConditionalVisibility();
+  renderOledPreview();
+  state.settingsDirty = false;
+  state.settingsLoading = false;
+}
+
+function updateAudioUiState() {
+  const muted = Boolean(elements.audioMutedToggle?.checked);
+  const audioEnabled = Boolean(state.status?.firmware?.audioEnabled ?? false);
+  if (elements.audioMutedNote) {
+    if (!audioEnabled) {
+      elements.audioMutedNote.textContent = "Audio playback is disabled in this diagnostic firmware build, so Play requests will not produce sound until audio is re-enabled in firmware.";
+      return;
+    }
+    elements.audioMutedNote.textContent = muted
+      ? "Audio is muted by default in this build. Sound effects stay suppressed while muted."
+      : "Audio mute is off and playback is enabled.";
+  }
+}
+
+function currentBatteryCalibrationMultiplier() {
+  const measuredVoltage = Number(elements.batteryMeasuredVoltage?.value || 0);
+  const rawAdcVoltage = Number(state.status?.battery?.rawAdcVoltage || 0);
+  const savedMultiplierField = elements.settingsForm.elements.namedItem("battery.calibrationMultiplier");
+  const savedMultiplier = Number(savedMultiplierField?.value || 0);
+
+  if (measuredVoltage > 0 && rawAdcVoltage > 0) {
+    return measuredVoltage / rawAdcVoltage;
+  }
+  return savedMultiplier || 3.866;
+}
+
+function updateDerivedBatteryCalibration() {
+  if (!elements.batteryDerivedMultiplier) {
+    return;
+  }
+  const rawAdcVoltage = Number(state.status?.battery?.rawAdcVoltage || 0);
+  const measuredVoltage = Number(elements.batteryMeasuredVoltage?.value || 0);
+  if (measuredVoltage > 0 && rawAdcVoltage > 0) {
+    elements.batteryDerivedMultiplier.textContent = currentBatteryCalibrationMultiplier().toFixed(3);
+    return;
+  }
+  const savedMultiplierField = elements.settingsForm.elements.namedItem("battery.calibrationMultiplier");
+  const savedMultiplier = Number(savedMultiplierField?.value || 0);
+  elements.batteryDerivedMultiplier.textContent = savedMultiplier > 0 ? savedMultiplier.toFixed(3) : "-";
 }
 
 function collectForm() {
@@ -108,24 +374,23 @@ function collectForm() {
     if (!field.name) {
       continue;
     }
+    normalizeDecimalField(field);
     const [section, key] = field.name.split(".");
     payload[section] ||= {};
     payload[section][key] = field.type === "checkbox" ? field.checked : field.value;
   }
 
   payload.mqtt.port = Number(payload.mqtt.port || 1883);
-  payload.device.savedVolumePercent = Number(payload.device.savedVolumePercent || 60);
-  payload.battery.dividerRatio = Number(payload.battery.dividerRatio || 2);
-  payload.battery.calibrationMultiplier = Number(payload.battery.calibrationMultiplier || 1);
-  payload.battery.smoothingAlpha = Number(payload.battery.smoothingAlpha || 0.2);
-  payload.battery.minVoltageClamp = Number(payload.battery.minVoltageClamp || 2.8);
-  payload.battery.maxVoltageClamp = Number(payload.battery.maxVoltageClamp || 4.35);
+  payload.device.savedVolumePercent = Number(elements.volumeSlider?.value || payload.device.savedVolumePercent || 5);
+  payload.device.audioMuted = Boolean(elements.audioMutedToggle?.checked ?? payload.device.audioMuted ?? true);
+  payload.battery.calibrationMultiplier = currentBatteryCalibrationMultiplier();
   payload.battery.updateIntervalMs = Number(payload.battery.updateIntervalMs || 10000);
-  payload.battery.sampleCount = Number(payload.battery.sampleCount || 8);
+  payload.battery.movingAverageWindowSize = Number(payload.battery.movingAverageWindowSize || 10);
   payload.oled.i2cAddress = Number(payload.oled.i2cAddress || 60);
   payload.oled.width = Number(payload.oled.width || 128);
   payload.oled.height = Number(payload.oled.height || 64);
-  payload.oled.sdaPin = Number(payload.oled.sdaPin || 21);
+  payload.oled.rotation = Number(payload.oled.rotation || 0);
+  payload.oled.sdaPin = Number(payload.oled.sdaPin || 23);
   payload.oled.sclPin = Number(payload.oled.sclPin || 19);
   payload.oled.resetPin = Number(payload.oled.resetPin || -1);
   payload.oled.dimTimeoutSeconds = Number(payload.oled.dimTimeoutSeconds || 0);
@@ -136,6 +401,47 @@ function updateConditionalVisibility() {
   const showStatic = elements.useStaticIpToggle.checked;
   for (const node of document.querySelectorAll(".static-ip-group")) {
     node.style.display = showStatic ? "grid" : "none";
+  }
+}
+
+function queueSettingsSave(delayMs = SETTINGS_AUTOSAVE_DELAY_MS) {
+  if (state.settingsLoading) {
+    return;
+  }
+  state.settingsDirty = true;
+  if (state.settingsSaveTimer) {
+    window.clearTimeout(state.settingsSaveTimer);
+  }
+  state.settingsSaveTimer = window.setTimeout(() => {
+    saveSettings({ silent: true }).catch(handleError);
+  }, delayMs);
+}
+
+function renderWifiNetworks(networks) {
+  elements.wifiNetworkList.innerHTML = "";
+
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = networks.length ? "Select a scanned SSID" : "No networks found";
+  elements.wifiNetworkList.appendChild(placeholder);
+
+  for (const network of networks) {
+    if (!network.ssid) {
+      continue;
+    }
+
+    const option = document.createElement("option");
+    option.value = network.ssid;
+    option.textContent = `${network.ssid} (${network.rssi} dBm${network.encrypted ? ", locked" : ", open"})`;
+    elements.wifiNetworkList.appendChild(option);
+  }
+}
+
+function resetWifiNetworkList(message = "Select a scanned SSID") {
+  renderWifiNetworks([]);
+  const placeholder = elements.wifiNetworkList.firstElementChild;
+  if (placeholder) {
+    placeholder.textContent = message;
   }
 }
 
@@ -181,12 +487,10 @@ function renderStatus(status) {
   const wifiConnected = Boolean(status.network.wifiConnected);
   const mqttConnected = Boolean(status.network.mqttConnected);
   const playbackActive = status.playback.state === "playing";
+  const savedVolumePercent = Number(state.settings?.device?.savedVolumePercent ?? status.playback.volumePercent ?? 0);
 
   elements.deviceTitle.textContent = status.device.friendlyName || "ESP32 Notifier";
   elements.deviceNameValue.textContent = status.device.deviceName || "-";
-  elements.connectionState.textContent = status.network.apMode && !wifiConnected
-    ? `AP mode: ${status.network.apSsid}\nOpen http://192.168.4.1`
-    : `${status.device.deviceName} on ${status.network.ip || "no IP"}`;
 
   elements.ipAddress.textContent = status.network.ip || "-";
   elements.apInfo.textContent = status.network.apMode ? `${status.network.apSsid || "AP active"}` : "Disabled";
@@ -195,40 +499,123 @@ function renderStatus(status) {
   elements.firmwareVersion.textContent = `${status.firmware.version} (${status.firmware.buildDate})`;
   elements.firmwareVersionCard.textContent = status.firmware.version;
   elements.batteryVoltage.textContent = `${Number(status.battery.voltage || 0).toFixed(3)} V`;
-  elements.batteryRaw.textContent = `${status.battery.rawAdc ?? "-"}`;
+  elements.batteryRaw.textContent = `${status.battery.rawAdc ?? "-"} / ${Number(status.battery.rawAdcVoltage || 0).toFixed(3)} V`;
   elements.batteryHero.textContent = `${Number(status.battery.voltage || 0).toFixed(2)} V`;
+  updateDerivedBatteryCalibration();
   elements.freeHeap.textContent = `${status.system.freeHeap} B`;
   elements.settingsSource.textContent = status.settings.usingSaved ? "Saved settings" : "Hardwired defaults";
   elements.playbackState.textContent = status.playback.state || "idle";
   elements.currentTitle.textContent = status.playback.title || "Idle";
   elements.currentUrl.value = status.playback.url || "";
-  elements.volumeSlider.value = status.playback.volumePercent || 0;
-  elements.volumeValue.textContent = `${status.playback.volumePercent || 0}%`;
+  if (document.activeElement !== elements.volumeSlider) {
+    elements.volumeSlider.value = savedVolumePercent;
+  }
+  elements.volumeValue.textContent = `${document.activeElement === elements.volumeSlider ? elements.volumeSlider.value : savedVolumePercent}%`;
+  const audioMuted = Boolean(elements.audioMutedToggle?.checked);
+  const audioEnabled = Boolean(status.firmware?.audioEnabled);
 
-  setPill(elements.wifiPill, wifiConnected ? "Wi-Fi Connected" : "Wi-Fi Down", wifiConnected ? "ok" : "bad");
+  if (elements.playSubmitButton) {
+    elements.playSubmitButton.disabled = !audioEnabled;
+    elements.playSubmitButton.title = audioEnabled ? "" : "Audio playback is disabled in this firmware build";
+  }
+  updateAudioUiState();
+
+  elements.wifiPill.className = `stat-value multiline ${wifiConnected ? "ok" : "warn"}`;
+  elements.wifiPill.innerHTML = wifiConnected
+    ? `WiFi Linked<span class="stat-subvalue">${escapeHtml(status.network.ip || "No IP")}</span>`
+    : `AP Mode<span class="stat-subvalue">${escapeHtml(status.network.apMode ? "192.168.4.1" : "No IP")}</span>`;
   setPill(elements.mqttPill, mqttConnected ? "MQTT Connected" : "MQTT Offline", mqttConnected ? "ok" : "warn");
-  setPill(elements.audioPill, status.playback.state || "idle", playbackActive ? "ok" : "warn");
+  setPill(elements.audioPill, audioMuted ? "Muted" : (status.playback.state || "idle"), playbackActive && !audioMuted ? "ok" : "warn");
 
   elements.otaStatusLabel.textContent = ota.message || ota.lastResult || "Idle";
   elements.latestVersion.textContent = ota.latestVersion || status.ota.latestVersion || "-";
   elements.otaStatus.textContent = JSON.stringify({ ota, snapshot: status.ota }, null, 2);
-  elements.otaProgressFill.style.width = ota.busy ? "55%" : ota.updateAvailable ? "100%" : "0%";
-  elements.otaProgressLabel.textContent = ota.busy ? "Working..." : ota.updateAvailable ? "Update available" : "No pending update";
+  const progress = Number(ota.updateProgress || 0);
+  const bytes = Number(ota.updateBytes || 0);
+  const totalBytes = Number(ota.updateTotalBytes || 0);
+  const phase = ota.updatePhase || "";
+  elements.otaProgressFill.style.width = `${Math.max(0, Math.min(100, progress))}%`;
+  if (ota.busy || progress > 0) {
+    const byteLabel = totalBytes > 0 ? ` (${bytes}/${totalBytes} bytes)` : "";
+    elements.otaProgressLabel.textContent = `${phase || "Update"} ${progress}%${byteLabel}`;
+  } else {
+    elements.otaProgressLabel.textContent = ota.updateAvailable ? "Update available" : "No pending update";
+  }
+
+  if (ota.busy) {
+    startFirmwareProgressPolling();
+  } else if (progress === 0) {
+    stopFirmwareProgressPolling();
+  }
+
+  if (state.mqttConnectInProgress) {
+    if (mqttConnected) {
+      setMqttConnectStatus(`Connected to ${status.settings?.mqtt?.host || namedField("mqtt.host")?.value || "broker"}`);
+    } else if (!wifiConnected) {
+      setMqttConnectStatus("Waiting for Wi-Fi before MQTT can connect...");
+    } else {
+      setMqttConnectStatus("Connecting to MQTT broker...");
+    }
+  }
+
+  if (state.wifiConnectInProgress) {
+    if (wifiConnected) {
+      setScanStatus(`Connected to ${status.network.ssid || namedField("wifi.ssid")?.value || "Wi-Fi"}`);
+    } else {
+      setScanStatus("Connecting to Wi-Fi...");
+    }
+  }
+
+  updateWifiActionButton();
+  renderOledPreview();
+}
+
+function updateWifiActionButton() {
+  if (!elements.scanWifiButton) {
+    return;
+  }
+
+  const ssid = String(namedField("wifi.ssid")?.value || "").trim();
+  const password = String(namedField("wifi.password")?.value || "").trim();
+  const hasSelectedNetwork = Boolean(String(elements.wifiNetworkList?.value || "").trim());
+  const connectMode = ssid.length > 0 && (hasSelectedNetwork || password.length > 0 || state.wifiConnectInProgress || ssid !== String(state.status?.network?.ssid || "").trim());
+
+  elements.scanWifiButton.textContent = connectMode ? "Connect Wi-Fi" : "Search Wi-Fi";
+  elements.scanWifiButton.classList.toggle("secondary", !connectMode);
 }
 
 function setupTabs() {
   const buttons = [...document.querySelectorAll(".tab-button")];
   const panels = [...document.querySelectorAll(".tab-panel")];
+  const activateTab = (tabName) => {
+    for (const button of buttons) {
+      const isActive = button.dataset.tab === tabName;
+      button.setAttribute("aria-selected", String(isActive));
+    }
+    for (const panel of panels) {
+      panel.classList.toggle("active", panel.id === `tab-${tabName}`);
+    }
+    try {
+      window.localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, tabName);
+    } catch {
+    }
+  };
+
   for (const button of buttons) {
     button.addEventListener("click", () => {
-      for (const other of buttons) {
-        other.setAttribute("aria-selected", String(other === button));
-      }
-      for (const panel of panels) {
-        panel.classList.toggle("active", panel.id === `tab-${button.dataset.tab}`);
-      }
+      activateTab(button.dataset.tab);
     });
   }
+
+  let initialTab = buttons[0]?.dataset.tab || "info";
+  try {
+    const savedTab = window.localStorage.getItem(ACTIVE_TAB_STORAGE_KEY);
+    if (savedTab && buttons.some((button) => button.dataset.tab === savedTab)) {
+      initialTab = savedTab;
+    }
+  } catch {
+  }
+  activateTab(initialTab);
 }
 
 function setupPasswordToggles() {
@@ -249,19 +636,200 @@ async function loadStatus() {
   renderStatus(await request("/api/status"));
 }
 
+function stopFirmwareProgressPolling() {
+  if (state.firmwareProgressPollTimer) {
+    window.clearInterval(state.firmwareProgressPollTimer);
+    state.firmwareProgressPollTimer = null;
+  }
+}
+
+function startFirmwareProgressPolling() {
+  if (state.firmwareProgressPollTimer) {
+    return;
+  }
+  state.firmwareProgressPollTimer = window.setInterval(async () => {
+    try {
+      await loadStatus();
+      const ota = state.status?.otaManager || state.status?.ota || {};
+      const progress = Number(ota.updateProgress || 0);
+      if (!ota.busy && (progress === 0 || progress >= 100)) {
+        window.setTimeout(() => stopFirmwareProgressPolling(), 2000);
+      }
+    } catch {
+      stopFirmwareProgressPolling();
+    }
+  }, 500);
+}
+
+async function scanWifiNetworks() {
+  const button = elements.scanWifiButton;
+  button.disabled = true;
+  setScanStatus("Searching...");
+  resetWifiNetworkList("Searching for networks...");
+
+  try {
+    const startResult = await request("/api/wifi/scan?start=1");
+    if (!startResult.started && !startResult.scanning) {
+      button.disabled = false;
+      resetWifiNetworkList("No scan in progress");
+      setScanStatus("Wi-Fi scan could not start", true);
+      return;
+    }
+    if (state.wifiScanPollTimer) {
+      window.clearInterval(state.wifiScanPollTimer);
+    }
+    state.wifiScanPollTimer = window.setInterval(async () => {
+      try {
+        const result = await request("/api/wifi/scan");
+        if (result.scanning) {
+          setScanStatus("Searching...");
+          return;
+        }
+
+        window.clearInterval(state.wifiScanPollTimer);
+        state.wifiScanPollTimer = null;
+        button.disabled = false;
+
+        if (result.failed) {
+          resetWifiNetworkList("Wi-Fi scan failed");
+          setScanStatus("Wi-Fi scan failed", true);
+          return;
+        }
+
+        const networks = Array.isArray(result.networks) ? result.networks : [];
+        renderWifiNetworks(networks);
+        setScanStatus(networks.length ? `Found ${networks.length} network(s)` : "No networks found");
+      } catch (error) {
+        window.clearInterval(state.wifiScanPollTimer);
+        state.wifiScanPollTimer = null;
+        button.disabled = false;
+        setScanStatus(error.message, true);
+      }
+    }, 800);
+  } catch (error) {
+    resetWifiNetworkList("Wi-Fi scan failed");
+    setScanStatus(error.message, true);
+    button.disabled = false;
+    throw error;
+  }
+}
+
+async function connectWifi() {
+  const ssid = String(namedField("wifi.ssid")?.value || "").trim();
+  if (!ssid) {
+    setScanStatus("Select or enter a Wi-Fi SSID first", true);
+    return;
+  }
+
+  state.wifiConnectInProgress = true;
+  elements.scanWifiButton.disabled = true;
+  setScanStatus(`Saving Wi-Fi settings for ${ssid}...`);
+
+  try {
+    await saveSettings({ silent: true });
+    setMessage(`Wi-Fi settings saved for ${ssid}`);
+    setScanStatus(`Connecting to ${ssid}...`);
+
+    const connected = await pollStatusUntil(
+      (status) => Boolean(status?.network?.wifiConnected),
+      25,
+      1000,
+    );
+
+    if (connected) {
+      setScanStatus(`Connected to ${state.status?.network?.ssid || ssid}`);
+      setMessage(`Wi-Fi connected to ${state.status?.network?.ssid || ssid}`);
+    } else {
+      setScanStatus("Wi-Fi settings saved. Connection is still in progress.");
+      setMessage("Wi-Fi settings saved. Waiting for connection.");
+    }
+  } finally {
+    state.wifiConnectInProgress = false;
+    elements.scanWifiButton.disabled = false;
+    updateWifiActionButton();
+  }
+}
+
+async function connectMqtt() {
+  const host = String(namedField("mqtt.host")?.value || "").trim();
+  if (!host) {
+    setMqttConnectStatus("Enter an MQTT host first", true);
+    return;
+  }
+
+  state.mqttConnectInProgress = true;
+  elements.mqttConnectButton.disabled = true;
+  setMqttConnectStatus(`Saving MQTT settings for ${host}...`);
+
+  try {
+    await saveSettings({ silent: true });
+    setMessage(`MQTT settings saved for ${host}`);
+
+    if (!state.status?.network?.wifiConnected) {
+      setMqttConnectStatus("MQTT settings saved. Waiting for Wi-Fi first.");
+      return;
+    }
+
+    setMqttConnectStatus(`Connecting to ${host}...`);
+    const connected = await pollStatusUntil(
+      (status) => Boolean(status?.network?.mqttConnected),
+      15,
+      1000,
+    );
+
+    if (connected) {
+      setMqttConnectStatus(`Connected to ${host}`);
+      setMessage(`MQTT connected to ${host}`);
+    } else {
+      setMqttConnectStatus("MQTT settings saved. Waiting for broker connection.");
+      setMessage("MQTT settings saved. Waiting for broker connection.");
+    }
+  } finally {
+    state.mqttConnectInProgress = false;
+    elements.mqttConnectButton.disabled = false;
+  }
+}
+
 async function loadSettings() {
   state.settings = await request("/api/settings");
   fillForm(state.settings);
+  resetWifiNetworkList();
 }
 
-async function saveSettings() {
-  await request("/api/settings", {
-    method: "POST",
-    body: JSON.stringify(collectForm()),
-  });
-  setMessage("Settings saved");
-  toast("Settings saved");
-  await Promise.all([loadStatus(), loadSettings()]);
+async function saveSettings(options = {}) {
+  const { silent = false } = options;
+  if (state.settingsLoading || state.settingsSaving) {
+    return;
+  }
+  if (state.settingsSaveTimer) {
+    window.clearTimeout(state.settingsSaveTimer);
+    state.settingsSaveTimer = null;
+  }
+  normalizeDecimalField(elements.batteryMeasuredVoltage);
+  state.settingsSaving = true;
+  const submittedSettings = collectForm();
+  if (!silent) {
+    setMessage("Saving settings...");
+  }
+  try {
+    await request("/api/settings", {
+      method: "POST",
+      body: JSON.stringify(submittedSettings),
+    });
+
+    state.settings = submittedSettings;
+    fillForm(submittedSettings);
+    state.settingsDirty = false;
+    setMessage(silent ? "Settings auto-saved" : "Settings saved");
+    if (!silent) {
+      toast("Settings saved");
+    }
+
+    await loadStatus();
+    await refreshSettingsAfterSave(submittedSettings);
+  } finally {
+    state.settingsSaving = false;
+  }
 }
 
 async function submitPlay(event) {
@@ -276,27 +844,38 @@ async function submitPlay(event) {
   state.recentPlayback = state.recentPlayback.filter((item, index, array) => index === array.findIndex((entry) => entry.url === item.url && entry.type === item.type));
   saveRecentPlayback();
   renderRecentPlayback();
-  setMessage("Playback started");
-  toast("Playback started");
+  setMessage("Playback queued");
+  toast("Playback queued");
   await loadStatus();
 }
 
 async function setVolume(volumePercent) {
+  state.settings ||= {};
+  state.settings.device ||= {};
+  state.settings.device.savedVolumePercent = volumePercent;
+  if (namedField("device.savedVolumePercent")) {
+    namedField("device.savedVolumePercent").value = volumePercent;
+  }
   await request("/api/volume", {
     method: "POST",
     body: JSON.stringify({ volumePercent }),
   });
+  elements.volumeSlider.value = volumePercent;
   elements.volumeValue.textContent = `${volumePercent}%`;
+  setMessage(`Volume saved at ${volumePercent}%`);
+  await loadStatus();
+  await refreshSettingsAfterSave({ device: { savedVolumePercent: volumePercent } }, 8, 200);
 }
 
 async function stopPlayback() {
   await request("/api/stop", { method: "POST", body: JSON.stringify({}) });
-  setMessage("Playback stopped");
-  toast("Playback stopped");
+  setMessage("Stop queued");
+  toast("Stop queued");
   await loadStatus();
 }
 
 async function checkOta(apply) {
+  startFirmwareProgressPolling();
   const result = await request("/api/ota/check", {
     method: "POST",
     body: JSON.stringify({ apply }),
@@ -304,6 +883,83 @@ async function checkOta(apply) {
   elements.otaStatus.textContent = JSON.stringify(result, null, 2);
   setMessage(apply ? "OTA install requested" : "OTA check requested");
   await loadStatus();
+}
+
+function updateLocalFirmwareLabel() {
+  const file = elements.localFirmwareFile?.files?.[0];
+  elements.localFirmwareLabel.textContent = file ? `Local: ${file.name}` : "No local firmware selected";
+}
+
+async function uploadLocalFirmware() {
+  const file = elements.localFirmwareFile?.files?.[0];
+  if (!file) {
+    setMessage("Select a local firmware .bin file first.", true);
+    return;
+  }
+  if (!/\.bin$/i.test(file.name)) {
+    setMessage("Select a .bin firmware image.", true);
+    return;
+  }
+  if (file.size <= 0) {
+    setMessage("Selected firmware file is empty.", true);
+    return;
+  }
+
+  setMessage(`Uploading ${file.name}...`);
+  elements.otaStatusLabel.textContent = "Uploading local firmware...";
+  elements.otaProgressFill.style.width = "0%";
+  elements.otaProgressLabel.textContent = "Uploading local firmware... 0%";
+  startFirmwareProgressPolling();
+
+  const formData = new FormData();
+  formData.append("firmware", file, file.name);
+
+  await new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/firmware/upload");
+
+    xhr.upload.addEventListener("progress", (event) => {
+      if (!event.lengthComputable) {
+        return;
+      }
+      const percent = Math.max(0, Math.min(100, Math.round((event.loaded * 100) / event.total)));
+      const deviceProgress = Number(state.status?.otaManager?.updateProgress || state.status?.ota?.updateProgress || 0);
+      if (deviceProgress <= percent) {
+        elements.otaProgressFill.style.width = `${percent}%`;
+        elements.otaProgressLabel.textContent = `Uploading to ESP... ${percent}% (${event.loaded}/${event.total} bytes)`;
+      }
+    });
+
+    xhr.addEventListener("load", async () => {
+      let payload = {};
+      try {
+        payload = JSON.parse(xhr.responseText || "{}");
+      } catch {
+        payload = {};
+      }
+
+      if (xhr.status >= 200 && xhr.status < 300) {
+        setMessage(payload.message || "Local firmware uploaded.");
+        try {
+          await loadStatus();
+        } catch {
+        }
+        resolve();
+        return;
+      }
+
+      reject(new Error(payload.error || xhr.statusText || "Local firmware upload failed."));
+    });
+
+    xhr.addEventListener("error", () => reject(new Error("Local firmware upload failed.")));
+    xhr.send(formData);
+  }).catch((error) => {
+    stopFirmwareProgressPolling();
+    throw error;
+  }).finally(() => {
+    elements.localFirmwareFile.value = "";
+    updateLocalFirmwareLabel();
+  });
 }
 
 async function postSimple(path, message) {
@@ -323,11 +979,22 @@ async function copyCurrentUrl() {
 }
 
 document.getElementById("reloadButton").addEventListener("click", () => Promise.all([loadStatus(), loadSettings()]));
-document.getElementById("saveSettingsButton").addEventListener("click", () => saveSettings().catch(handleError));
+elements.scanWifiButton.addEventListener("click", () => {
+  const ssid = String(namedField("wifi.ssid")?.value || "").trim();
+  const hasSelectedNetwork = Boolean(String(elements.wifiNetworkList?.value || "").trim());
+  const shouldConnect = ssid.length > 0 && (hasSelectedNetwork || !state.status?.network?.wifiConnected);
+  return (shouldConnect ? connectWifi() : scanWifiNetworks()).catch(handleError);
+});
 document.getElementById("stopButton").addEventListener("click", () => stopPlayback().catch(handleError));
 document.getElementById("copyUrlButton").addEventListener("click", () => copyCurrentUrl().catch(handleError));
 document.getElementById("checkOtaButton").addEventListener("click", () => checkOta(false).catch(handleError));
 document.getElementById("applyOtaButton").addEventListener("click", () => checkOta(true).catch(handleError));
+elements.mqttConnectButton?.addEventListener("click", () => connectMqtt().catch(handleError));
+document.getElementById("uploadFirmwareButton").addEventListener("click", () => {
+  elements.localFirmwareFile.value = "";
+  updateLocalFirmwareLabel();
+  elements.localFirmwareFile.click();
+});
 document.getElementById("rebootButton").addEventListener("click", () => postSimple("/api/reboot", "Reboot requested").catch(handleError));
 document.getElementById("factoryResetButton").addEventListener("click", async () => {
   if (!window.confirm("Erase saved settings and reboot?")) {
@@ -335,13 +1002,96 @@ document.getElementById("factoryResetButton").addEventListener("click", async ()
   }
   await postSimple("/api/factory-reset", "Factory reset requested");
 });
+elements.localFirmwareFile?.addEventListener("change", () => {
+  updateLocalFirmwareLabel();
+  if (elements.localFirmwareFile.files && elements.localFirmwareFile.files[0]) {
+    uploadLocalFirmware().catch(handleError);
+  }
+});
 
-elements.playForm.addEventListener("submit", submitPlay);
+elements.playForm.addEventListener("submit", (event) => submitPlay(event).catch(handleError));
+elements.wifiNetworkList.addEventListener("change", (event) => {
+  if (!event.target.value) {
+    updateWifiActionButton();
+    return;
+  }
+  const field = namedField("wifi.ssid");
+  if (field) {
+    field.value = event.target.value;
+    setScanStatus(`Selected ${event.target.value}. Enter the password, then connect.`);
+    updateWifiActionButton();
+  }
+});
 elements.volumeSlider.addEventListener("change", (event) => setVolume(Number(event.target.value)).catch(handleError));
 elements.volumeSlider.addEventListener("input", (event) => {
   elements.volumeValue.textContent = `${event.target.value}%`;
 });
+elements.audioMutedToggle?.addEventListener("change", () => {
+  updateAudioUiState();
+  queueSettingsSave(150);
+});
+elements.batteryMeasuredVoltage?.addEventListener("input", (event) => {
+  normalizeDecimalField(event.target);
+  updateDerivedBatteryCalibration();
+  queueSettingsSave();
+});
+elements.batteryMeasuredVoltage?.addEventListener("blur", (event) => {
+  normalizeDecimalField(event.target);
+  updateDerivedBatteryCalibration();
+  if (state.settingsDirty) {
+    saveSettings({ silent: true }).catch(handleError);
+  }
+});
 elements.useStaticIpToggle.addEventListener("change", updateConditionalVisibility);
+
+for (const field of elements.settingsForm.elements) {
+  if (!field || !field.name) {
+    continue;
+  }
+
+  if (field.type === "checkbox" || field.tagName === "SELECT") {
+    field.addEventListener("change", () => {
+      queueSettingsSave(150);
+      if (field.name === "wifi.ssid" || field.name === "wifi.password") {
+        updateWifiActionButton();
+      }
+      if (field.name?.startsWith("oled.")) {
+        renderOledPreview();
+      }
+      if (field.name?.startsWith("mqtt.")) {
+        setMqttConnectStatus("");
+      }
+    });
+    continue;
+  }
+
+  field.addEventListener("input", (event) => {
+    normalizeDecimalField(event.target);
+    if (event.target.name === "battery.calibrationMultiplier") {
+      updateDerivedBatteryCalibration();
+    }
+    if (event.target.name === "wifi.ssid" || event.target.name === "wifi.password") {
+      updateWifiActionButton();
+      if (!state.wifiConnectInProgress) {
+        setScanStatus("");
+      }
+    }
+    if (event.target.name?.startsWith("oled.")) {
+      renderOledPreview();
+    }
+    if (event.target.name?.startsWith("mqtt.")) {
+      setMqttConnectStatus("");
+    }
+    queueSettingsSave();
+  });
+
+  field.addEventListener("blur", (event) => {
+    normalizeDecimalField(event.target);
+    if (state.settingsDirty) {
+      saveSettings({ silent: true }).catch(handleError);
+    }
+  });
+}
 
 function handleError(error) {
   console.error(error);
@@ -352,6 +1102,8 @@ function handleError(error) {
 setupTabs();
 setupPasswordToggles();
 renderRecentPlayback();
+updateWifiActionButton();
+renderOledPreview();
 
 Promise.all([loadStatus(), loadSettings()]).catch(handleError);
 

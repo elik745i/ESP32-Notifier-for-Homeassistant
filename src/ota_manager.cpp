@@ -23,6 +23,30 @@ String applyVersionTemplate(String templ, const String& version) {
 
 }  // namespace
 
+bool OtaManager::hasBinExtension(const String& filename) const {
+    String lowercase = filename;
+    lowercase.toLowerCase();
+    return lowercase.endsWith(".bin");
+}
+
+void OtaManager::resetProgress() {
+    updatePhase_ = "";
+    progressBytes_ = 0;
+    progressTotalBytes_ = 0;
+    progressPercent_ = 0;
+}
+
+void OtaManager::scheduleReboot(unsigned long delayMs) {
+    rebootPending_ = true;
+    rebootAtMs_ = millis() + delayMs;
+}
+
+void OtaManager::syncAppState(const String& lastResult, const String& lastError) {
+    if (appState_ != nullptr) {
+        appState_->setOta(busy_, updateAvailable_, latestVersion_, lastResult, lastError, updatePhase_, progressPercent_);
+    }
+}
+
 void OtaManager::begin(const SettingsBundle& settings, AppState& appState) {
     appState_ = &appState;
     applySettings(settings);
@@ -33,6 +57,10 @@ void OtaManager::applySettings(const SettingsBundle& settings) {
 }
 
 void OtaManager::loop() {
+    if (rebootPending_ && static_cast<long>(millis() - rebootAtMs_) >= 0) {
+        rebootPending_ = false;
+        ESP.restart();
+    }
     if (pendingCheck_ && !busy_) {
         const bool applyAfterCheck = pendingApply_;
         pendingCheck_ = false;
@@ -47,11 +75,120 @@ bool OtaManager::triggerCheck(bool applyAfterCheck) {
     }
     pendingCheck_ = true;
     pendingApply_ = applyAfterCheck;
+    selectedVersion_ = "";
+    resetProgress();
     lastMessage_ = applyAfterCheck ? "queued update" : "queued check";
-    if (appState_ != nullptr) {
-        appState_->setOta(updateAvailable_, latestVersion_, "queued", "");
-    }
+    syncAppState("queued");
     return true;
+}
+
+bool OtaManager::beginLocalUpload(const String& filename, size_t totalSize, String& error) {
+    if (busy_) {
+        error = "Another update is already in progress.";
+        return false;
+    }
+    if (!hasBinExtension(filename)) {
+        error = "Select a .bin firmware image.";
+        return false;
+    }
+
+    selectedVersion_ = "local";
+    lastMessage_ = "Flashing local firmware...";
+    updatePhase_ = "Flashing";
+    progressBytes_ = 0;
+    progressTotalBytes_ = totalSize;
+    progressPercent_ = 0;
+    localUploadStarted_ = true;
+    localUploadHadData_ = false;
+    localUploadOk_ = false;
+    busy_ = true;
+
+    const size_t updateSize = totalSize > 0 ? totalSize : UPDATE_SIZE_UNKNOWN;
+    if (!Update.begin(updateSize, U_FLASH)) {
+        error = String("Local firmware update failed: ") + Update.errorString();
+        abortLocalUpload(error);
+        return false;
+    }
+    syncAppState("updating");
+    return true;
+}
+
+bool OtaManager::writeLocalUploadChunk(const uint8_t* data, size_t len, String& error) {
+    if (!localUploadStarted_ || !busy_) {
+        error = "Local upload is not active.";
+        return false;
+    }
+    if (len == 0) {
+        return true;
+    }
+
+    if (!localUploadHadData_) {
+        localUploadHadData_ = true;
+        if (data[0] != 0xE9) {
+            error = "Uploaded file is not a valid ESP32 firmware image.";
+            abortLocalUpload(error);
+            return false;
+        }
+    }
+
+    if (Update.write(const_cast<uint8_t*>(data), len) != len) {
+        error = String("Local firmware update failed: ") + Update.errorString();
+        abortLocalUpload(error);
+        return false;
+    }
+
+    progressBytes_ += len;
+    if (progressTotalBytes_ > 0) {
+        progressPercent_ = static_cast<uint8_t>(min<size_t>(100U, (progressBytes_ * 100U) / progressTotalBytes_));
+        lastMessage_ = String("Flashing local firmware... ") + progressPercent_ + "%";
+    }
+    syncAppState("updating");
+    return true;
+}
+
+bool OtaManager::finishLocalUpload(String& error) {
+    if (!localUploadStarted_) {
+        error = "Firmware upload did not start.";
+        return false;
+    }
+    if (!localUploadHadData_) {
+        error = "Uploaded firmware did not contain data.";
+        abortLocalUpload(error);
+        return false;
+    }
+    if (!Update.end(true)) {
+        error = String("Local firmware update failed: ") + Update.errorString();
+        abortLocalUpload(error);
+        return false;
+    }
+    if (!Update.isFinished()) {
+        error = "Local firmware update failed: incomplete write.";
+        abortLocalUpload(error);
+        return false;
+    }
+
+    localUploadOk_ = true;
+    localUploadStarted_ = false;
+    busy_ = false;
+    progressBytes_ = progressTotalBytes_;
+    progressPercent_ = 100;
+    updatePhase_ = "";
+    lastMessage_ = "Local firmware uploaded. Restarting...";
+    syncAppState("installed");
+    scheduleReboot(1500);
+    return true;
+}
+
+void OtaManager::abortLocalUpload(const String& error) {
+    Update.abort();
+    localUploadStarted_ = false;
+    localUploadHadData_ = false;
+    localUploadOk_ = false;
+    busy_ = false;
+    resetProgress();
+    selectedVersion_ = "local";
+    lastMessage_ = error;
+    syncAppState("error", error);
 }
 
 void OtaManager::appendStatusJson(JsonObject root) const {
@@ -59,31 +196,34 @@ void OtaManager::appendStatusJson(JsonObject root) const {
     root["updateAvailable"] = updateAvailable_;
     root["latestVersion"] = latestVersion_;
     root["message"] = lastMessage_;
+    root["selectedVersion"] = selectedVersion_;
+    root["updatePhase"] = updatePhase_;
+    root["updateProgress"] = progressPercent_;
+    root["updateBytes"] = progressBytes_;
+    root["updateTotalBytes"] = progressTotalBytes_;
 }
 
 void OtaManager::runTask(bool applyAfterCheck) {
     busy_ = true;
+    selectedVersion_ = "";
+    resetProgress();
+    updatePhase_ = "Checking";
     lastMessage_ = applyAfterCheck ? "checking and applying" : "checking";
-    if (appState_ != nullptr) {
-        appState_->setOta(updateAvailable_, latestVersion_, applyAfterCheck ? "checking/apply" : "checking", "");
-    }
+    syncAppState(applyAfterCheck ? "checking/apply" : "checking");
 
     const CheckResult result = checkNow();
     latestVersion_ = result.latestVersion;
     updateAvailable_ = result.updateAvailable;
     lastMessage_ = result.message;
     if (!result.success) {
-        if (appState_ != nullptr) {
-            appState_->setOta(updateAvailable_, latestVersion_, "error", result.message);
-        }
+        syncAppState("error", result.message);
         busy_ = false;
         return;
     }
 
     if (!applyAfterCheck || !result.updateAvailable) {
-        if (appState_ != nullptr) {
-            appState_->setOta(updateAvailable_, latestVersion_, result.updateAvailable ? "available" : "current", "");
-        }
+        updatePhase_ = "";
+        syncAppState(result.updateAvailable ? "available" : "current");
         busy_ = false;
         return;
     }
@@ -91,19 +231,15 @@ void OtaManager::runTask(bool applyAfterCheck) {
     String installMessage;
     if (!installNow(result, installMessage)) {
         lastMessage_ = installMessage;
-        if (appState_ != nullptr) {
-            appState_->setOta(updateAvailable_, latestVersion_, "error", installMessage);
-        }
+        syncAppState("error", installMessage);
         busy_ = false;
         return;
     }
 
     lastMessage_ = installMessage;
-    if (appState_ != nullptr) {
-        appState_->setOta(false, latestVersion_, "installed", "");
-    }
-    delay(500);
-    ESP.restart();
+    syncAppState("installed");
+    busy_ = false;
+    scheduleReboot(1500);
 }
 
 int OtaManager::compareVersions(const String& left, const String& right) const {
@@ -234,6 +370,12 @@ OtaManager::CheckResult OtaManager::checkNow() {
 }
 
 bool OtaManager::installNow(const CheckResult& result, String& message) {
+    selectedVersion_ = result.latestVersion;
+    updatePhase_ = "Flashing";
+    progressBytes_ = 0;
+    progressTotalBytes_ = 0;
+    progressPercent_ = 0;
+    syncAppState("updating");
     WiFiClientSecure client;
     if (settings_.ota.allowInsecureTls) {
         client.setInsecure();
@@ -257,6 +399,7 @@ bool OtaManager::installNow(const CheckResult& result, String& message) {
         http.end();
         return false;
     }
+    progressTotalBytes_ = static_cast<size_t>(contentLength);
     if (!Update.begin(contentLength)) {
         message = "Not enough space for OTA";
         http.end();
@@ -289,6 +432,10 @@ bool OtaManager::installNow(const CheckResult& result, String& message) {
             return false;
         }
         written += read;
+        progressBytes_ = static_cast<size_t>(written);
+        progressPercent_ = static_cast<uint8_t>(min(100, (written * 100) / contentLength));
+        lastMessage_ = String("Flashing firmware... ") + progressPercent_ + "%";
+        syncAppState("updating");
     }
 
     uint8_t digest[32];
@@ -319,6 +466,9 @@ bool OtaManager::installNow(const CheckResult& result, String& message) {
     }
 
     http.end();
+    updatePhase_ = "";
+    progressBytes_ = progressTotalBytes_;
+    progressPercent_ = 100;
     message = "update installed";
     return true;
 }

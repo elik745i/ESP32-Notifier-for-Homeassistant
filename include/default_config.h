@@ -27,15 +27,12 @@ constexpr char OTA_ASSET_TEMPLATE[] = "esp32-notifier-${version}.bin";
 constexpr char OTA_MANIFEST_URL[] = "";
 constexpr bool OTA_ALLOW_INSECURE_TLS = true;
 
-constexpr float BATTERY_DIVIDER_RATIO = 2.0f;
-constexpr float BATTERY_CALIBRATION = 1.0f;
-constexpr float BATTERY_ALPHA = 0.20f;
-constexpr float BATTERY_MIN_VOLTAGE = 2.80f;
-constexpr float BATTERY_MAX_VOLTAGE = 4.35f;
+constexpr float BATTERY_CALIBRATION = 3.866f;
 constexpr uint32_t BATTERY_UPDATE_INTERVAL_MS = 10000;
-constexpr uint16_t BATTERY_SAMPLE_COUNT = 8;
+constexpr uint16_t BATTERY_MOVING_AVERAGE_WINDOW = 10;
 
-constexpr uint8_t DEFAULT_VOLUME_PERCENT = 60;
+constexpr uint8_t DEFAULT_VOLUME_PERCENT = 5;
+constexpr bool DEFAULT_AUDIO_MUTED = true;
 
 constexpr bool WEB_AUTH_ENABLED = false;
 constexpr char WEB_USERNAME[] = "admin";
@@ -46,6 +43,7 @@ constexpr uint8_t OLED_I2C_ADDRESS = 0x3C;
 constexpr char OLED_DRIVER[] = "ssd1306";
 constexpr uint8_t OLED_WIDTH = 128;
 constexpr uint8_t OLED_HEIGHT = 64;
+constexpr uint16_t OLED_ROTATION = 0;
 constexpr uint8_t OLED_SDA_PIN = 23;
 constexpr uint8_t OLED_SCL_PIN = 19;
 constexpr int8_t OLED_RESET_PIN = -1;

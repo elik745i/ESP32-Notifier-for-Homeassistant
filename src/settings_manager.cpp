@@ -30,6 +30,8 @@ SettingsBundle SettingsManager::defaults() const {
     SettingsBundle settings;
     settings.wifi.ssid = DefaultConfig::WIFI_SSID;
     settings.wifi.password = DefaultConfig::WIFI_PASSWORD;
+    settings.wifi.apSsid = "";
+    settings.wifi.apPassword = DefaultConfig::WIFI_AP_PASSWORD;
     settings.wifi.apFallbackEnabled = DefaultConfig::WIFI_AP_FALLBACK_ENABLED;
 
     settings.mqtt.host = DefaultConfig::MQTT_HOST;
@@ -46,13 +48,9 @@ SettingsBundle SettingsManager::defaults() const {
     settings.ota.manifestUrl = DefaultConfig::OTA_MANIFEST_URL;
     settings.ota.allowInsecureTls = DefaultConfig::OTA_ALLOW_INSECURE_TLS;
 
-    settings.battery.dividerRatio = DefaultConfig::BATTERY_DIVIDER_RATIO;
     settings.battery.calibrationMultiplier = DefaultConfig::BATTERY_CALIBRATION;
-    settings.battery.smoothingAlpha = DefaultConfig::BATTERY_ALPHA;
-    settings.battery.minVoltageClamp = DefaultConfig::BATTERY_MIN_VOLTAGE;
-    settings.battery.maxVoltageClamp = DefaultConfig::BATTERY_MAX_VOLTAGE;
     settings.battery.updateIntervalMs = DefaultConfig::BATTERY_UPDATE_INTERVAL_MS;
-    settings.battery.sampleCount = DefaultConfig::BATTERY_SAMPLE_COUNT;
+    settings.battery.movingAverageWindowSize = DefaultConfig::BATTERY_MOVING_AVERAGE_WINDOW;
 
     settings.webAuth.enabled = DefaultConfig::WEB_AUTH_ENABLED;
     settings.webAuth.username = DefaultConfig::WEB_USERNAME;
@@ -63,6 +61,7 @@ SettingsBundle SettingsManager::defaults() const {
     settings.oled.i2cAddress = DefaultConfig::OLED_I2C_ADDRESS;
     settings.oled.width = DefaultConfig::OLED_WIDTH;
     settings.oled.height = DefaultConfig::OLED_HEIGHT;
+    settings.oled.rotation = DefaultConfig::OLED_ROTATION;
     settings.oled.sdaPin = DefaultConfig::OLED_SDA_PIN;
     settings.oled.sclPin = DefaultConfig::OLED_SCL_PIN;
     settings.oled.resetPin = DefaultConfig::OLED_RESET_PIN;
@@ -71,12 +70,17 @@ SettingsBundle SettingsManager::defaults() const {
     settings.device.deviceName = DefaultConfig::DEVICE_NAME;
     settings.device.friendlyName = DefaultConfig::FRIENDLY_NAME;
     settings.device.savedVolumePercent = DefaultConfig::DEFAULT_VOLUME_PERCENT;
+    settings.device.audioMuted = DefaultConfig::DEFAULT_AUDIO_MUTED;
     settings.usingSavedSettings = false;
     return settings;
 }
 
 SettingsBundle SettingsManager::sanitize(const SettingsBundle& input) const {
     SettingsBundle settings = input;
+    settings.wifi.ssid.trim();
+    settings.wifi.password.trim();
+    settings.wifi.apSsid.trim();
+    settings.wifi.apPassword.trim();
     settings.device.deviceName.trim();
     settings.device.friendlyName.trim();
     settings.mqtt.baseTopic.trim();
@@ -100,16 +104,18 @@ SettingsBundle SettingsManager::sanitize(const SettingsBundle& input) const {
     if (settings.mqtt.port == 0) {
         settings.mqtt.port = DefaultConfig::MQTT_PORT;
     }
+    if (!settings.wifi.apPassword.isEmpty() && settings.wifi.apPassword.length() < 8) {
+        settings.wifi.apPassword = DefaultConfig::WIFI_AP_PASSWORD;
+    }
+    if (settings.wifi.apPassword.isEmpty()) {
+        settings.wifi.apPassword = DefaultConfig::WIFI_AP_PASSWORD;
+    }
     if (settings.device.savedVolumePercent > 100) {
         settings.device.savedVolumePercent = 100;
     }
-    settings.battery.dividerRatio = settings.battery.dividerRatio < 1.0f ? 1.0f : settings.battery.dividerRatio;
-    settings.battery.calibrationMultiplier = clampValue<float>(settings.battery.calibrationMultiplier, 0.1f, 4.0f);
-    settings.battery.smoothingAlpha = clampValue<float>(settings.battery.smoothingAlpha, 0.01f, 1.0f);
-    settings.battery.minVoltageClamp = clampValue<float>(settings.battery.minVoltageClamp, 1.0f, 5.0f);
-    settings.battery.maxVoltageClamp = clampValue<float>(settings.battery.maxVoltageClamp, settings.battery.minVoltageClamp, 6.0f);
-    settings.battery.updateIntervalMs = settings.battery.updateIntervalMs < 500 ? 500 : settings.battery.updateIntervalMs;
-    settings.battery.sampleCount = clampValue<uint16_t>(settings.battery.sampleCount, static_cast<uint16_t>(1), static_cast<uint16_t>(32));
+    settings.battery.calibrationMultiplier = clampValue<float>(settings.battery.calibrationMultiplier, 0.1f, 10.0f);
+    settings.battery.updateIntervalMs = settings.battery.updateIntervalMs < 250 ? 250 : settings.battery.updateIntervalMs;
+    settings.battery.movingAverageWindowSize = clampValue<uint16_t>(settings.battery.movingAverageWindowSize, static_cast<uint16_t>(1), static_cast<uint16_t>(32));
     settings.oled.driver.toLowerCase();
     if (settings.oled.driver != "ssd1306" && settings.oled.driver != "sh1106") {
         settings.oled.driver = "ssd1306";
@@ -117,6 +123,9 @@ SettingsBundle SettingsManager::sanitize(const SettingsBundle& input) const {
     settings.oled.i2cAddress = clampValue<uint8_t>(settings.oled.i2cAddress, static_cast<uint8_t>(1), static_cast<uint8_t>(127));
     settings.oled.width = clampValue<uint8_t>(settings.oled.width, static_cast<uint8_t>(64), static_cast<uint8_t>(128));
     settings.oled.height = clampValue<uint8_t>(settings.oled.height, static_cast<uint8_t>(32), static_cast<uint8_t>(64));
+    if (settings.oled.rotation != 0 && settings.oled.rotation != 90 && settings.oled.rotation != 180 && settings.oled.rotation != 270) {
+        settings.oled.rotation = 0;
+    }
     settings.oled.dimTimeoutSeconds = clampValue<uint16_t>(settings.oled.dimTimeoutSeconds, static_cast<uint16_t>(0), static_cast<uint16_t>(3600));
     settings.usingSavedSettings = input.usingSavedSettings;
     return settings;
@@ -132,6 +141,8 @@ SettingsBundle SettingsManager::load() {
 
     settings.wifi.ssid = readString("wifi_ssid", settings.wifi.ssid);
     settings.wifi.password = readString("wifi_pass", settings.wifi.password);
+    settings.wifi.apSsid = readString("wifi_apssid", settings.wifi.apSsid);
+    settings.wifi.apPassword = readString("wifi_appass", settings.wifi.apPassword);
     settings.wifi.apFallbackEnabled = readBool("wifi_apfb", settings.wifi.apFallbackEnabled);
     settings.wifi.useStaticIp = readBool("wifi_static", settings.wifi.useStaticIp);
     settings.wifi.staticIp = readString("wifi_ip", settings.wifi.staticIp);
@@ -156,13 +167,9 @@ SettingsBundle SettingsManager::load() {
     settings.ota.allowInsecureTls = readBool("ota_tls", settings.ota.allowInsecureTls);
     settings.ota.autoCheck = readBool("ota_auto", settings.ota.autoCheck);
 
-    settings.battery.dividerRatio = readFloat("bat_div", settings.battery.dividerRatio);
     settings.battery.calibrationMultiplier = readFloat("bat_cal", settings.battery.calibrationMultiplier);
-    settings.battery.smoothingAlpha = readFloat("bat_alpha", settings.battery.smoothingAlpha);
-    settings.battery.minVoltageClamp = readFloat("bat_min", settings.battery.minVoltageClamp);
-    settings.battery.maxVoltageClamp = readFloat("bat_max", settings.battery.maxVoltageClamp);
     settings.battery.updateIntervalMs = readUInt("bat_int", settings.battery.updateIntervalMs);
-    settings.battery.sampleCount = readUInt("bat_samp", settings.battery.sampleCount);
+    settings.battery.movingAverageWindowSize = readUInt("bat_win", readUInt("bat_samp", settings.battery.movingAverageWindowSize));
 
     settings.webAuth.enabled = readBool("web_auth", settings.webAuth.enabled);
     settings.webAuth.username = readString("web_user", settings.webAuth.username);
@@ -173,6 +180,7 @@ SettingsBundle SettingsManager::load() {
     settings.oled.i2cAddress = readUInt("oled_addr", settings.oled.i2cAddress);
     settings.oled.width = readUInt("oled_w", settings.oled.width);
     settings.oled.height = readUInt("oled_h", settings.oled.height);
+    settings.oled.rotation = readUInt("oled_rot", settings.oled.rotation);
     settings.oled.sdaPin = readUInt("oled_sda", settings.oled.sdaPin);
     settings.oled.sclPin = readUInt("oled_scl", settings.oled.sclPin);
     settings.oled.resetPin = readInt("oled_rst", settings.oled.resetPin);
@@ -181,6 +189,7 @@ SettingsBundle SettingsManager::load() {
     settings.device.deviceName = readString("dev_name", settings.device.deviceName);
     settings.device.friendlyName = readString("dev_friendly", settings.device.friendlyName);
     settings.device.savedVolumePercent = readUInt("dev_vol", settings.device.savedVolumePercent);
+    settings.device.audioMuted = readBool("dev_muted", settings.device.audioMuted);
 
     settings = sanitize(settings);
     settings.mqtt.clientId = fallbackIfEmpty(settings.mqtt.clientId, settings.device.deviceName);
@@ -193,6 +202,8 @@ bool SettingsManager::save(const SettingsBundle& settings) {
     bool changed = false;
     changed |= writeStringIfChanged("wifi_ssid", sanitized.wifi.ssid);
     changed |= writeStringIfChanged("wifi_pass", sanitized.wifi.password);
+    changed |= writeStringIfChanged("wifi_apssid", sanitized.wifi.apSsid);
+    changed |= writeStringIfChanged("wifi_appass", sanitized.wifi.apPassword);
     changed |= writeBoolIfChanged("wifi_apfb", sanitized.wifi.apFallbackEnabled);
     changed |= writeBoolIfChanged("wifi_static", sanitized.wifi.useStaticIp);
     changed |= writeStringIfChanged("wifi_ip", sanitized.wifi.staticIp);
@@ -217,13 +228,9 @@ bool SettingsManager::save(const SettingsBundle& settings) {
     changed |= writeBoolIfChanged("ota_tls", sanitized.ota.allowInsecureTls);
     changed |= writeBoolIfChanged("ota_auto", sanitized.ota.autoCheck);
 
-    changed |= writeFloatIfChanged("bat_div", sanitized.battery.dividerRatio);
     changed |= writeFloatIfChanged("bat_cal", sanitized.battery.calibrationMultiplier);
-    changed |= writeFloatIfChanged("bat_alpha", sanitized.battery.smoothingAlpha);
-    changed |= writeFloatIfChanged("bat_min", sanitized.battery.minVoltageClamp);
-    changed |= writeFloatIfChanged("bat_max", sanitized.battery.maxVoltageClamp);
     changed |= writeUIntIfChanged("bat_int", sanitized.battery.updateIntervalMs);
-    changed |= writeUIntIfChanged("bat_samp", sanitized.battery.sampleCount);
+    changed |= writeUIntIfChanged("bat_win", sanitized.battery.movingAverageWindowSize);
 
     changed |= writeBoolIfChanged("web_auth", sanitized.webAuth.enabled);
     changed |= writeStringIfChanged("web_user", sanitized.webAuth.username);
@@ -234,6 +241,7 @@ bool SettingsManager::save(const SettingsBundle& settings) {
     changed |= writeUIntIfChanged("oled_addr", sanitized.oled.i2cAddress);
     changed |= writeUIntIfChanged("oled_w", sanitized.oled.width);
     changed |= writeUIntIfChanged("oled_h", sanitized.oled.height);
+    changed |= writeUIntIfChanged("oled_rot", sanitized.oled.rotation);
     changed |= writeUIntIfChanged("oled_sda", sanitized.oled.sdaPin);
     changed |= writeUIntIfChanged("oled_scl", sanitized.oled.sclPin);
     changed |= writeIntIfChanged("oled_rst", sanitized.oled.resetPin);
@@ -242,6 +250,7 @@ bool SettingsManager::save(const SettingsBundle& settings) {
     changed |= writeStringIfChanged("dev_name", sanitized.device.deviceName);
     changed |= writeStringIfChanged("dev_friendly", sanitized.device.friendlyName);
     changed |= writeUIntIfChanged("dev_vol", sanitized.device.savedVolumePercent);
+    changed |= writeBoolIfChanged("dev_muted", sanitized.device.audioMuted);
     changed |= writeBoolIfChanged(PREF_MARKER, true);
     return changed;
 }
@@ -254,6 +263,8 @@ void SettingsManager::toJson(const SettingsBundle& settings, JsonObject root) co
     JsonObject wifi = root["wifi"].to<JsonObject>();
     wifi["ssid"] = settings.wifi.ssid;
     wifi["password"] = settings.wifi.password;
+    wifi["apSsid"] = settings.wifi.apSsid;
+    wifi["apPassword"] = settings.wifi.apPassword;
     wifi["apFallbackEnabled"] = settings.wifi.apFallbackEnabled;
     wifi["useStaticIp"] = settings.wifi.useStaticIp;
     wifi["staticIp"] = settings.wifi.staticIp;
@@ -281,13 +292,9 @@ void SettingsManager::toJson(const SettingsBundle& settings, JsonObject root) co
     ota["autoCheck"] = settings.ota.autoCheck;
 
     JsonObject battery = root["battery"].to<JsonObject>();
-    battery["dividerRatio"] = settings.battery.dividerRatio;
     battery["calibrationMultiplier"] = settings.battery.calibrationMultiplier;
-    battery["smoothingAlpha"] = settings.battery.smoothingAlpha;
-    battery["minVoltageClamp"] = settings.battery.minVoltageClamp;
-    battery["maxVoltageClamp"] = settings.battery.maxVoltageClamp;
     battery["updateIntervalMs"] = settings.battery.updateIntervalMs;
-    battery["sampleCount"] = settings.battery.sampleCount;
+    battery["movingAverageWindowSize"] = settings.battery.movingAverageWindowSize;
 
     JsonObject webAuth = root["webAuth"].to<JsonObject>();
     webAuth["enabled"] = settings.webAuth.enabled;
@@ -300,6 +307,7 @@ void SettingsManager::toJson(const SettingsBundle& settings, JsonObject root) co
     oled["i2cAddress"] = settings.oled.i2cAddress;
     oled["width"] = settings.oled.width;
     oled["height"] = settings.oled.height;
+    oled["rotation"] = settings.oled.rotation;
     oled["sdaPin"] = settings.oled.sdaPin;
     oled["sclPin"] = settings.oled.sclPin;
     oled["resetPin"] = settings.oled.resetPin;
@@ -309,6 +317,7 @@ void SettingsManager::toJson(const SettingsBundle& settings, JsonObject root) co
     device["deviceName"] = settings.device.deviceName;
     device["friendlyName"] = settings.device.friendlyName;
     device["savedVolumePercent"] = settings.device.savedVolumePercent;
+    device["audioMuted"] = settings.device.audioMuted;
     root["usingSavedSettings"] = settings.usingSavedSettings;
 }
 
@@ -329,6 +338,8 @@ bool SettingsManager::updateFromJson(SettingsBundle& settings, JsonVariantConst 
     if (!wifi.isNull()) {
         copyString(wifi, "ssid", settings.wifi.ssid);
         copyString(wifi, "password", settings.wifi.password);
+        copyString(wifi, "apSsid", settings.wifi.apSsid);
+        copyString(wifi, "apPassword", settings.wifi.apPassword);
         copyString(wifi, "staticIp", settings.wifi.staticIp);
         copyString(wifi, "gateway", settings.wifi.gateway);
         copyString(wifi, "subnet", settings.wifi.subnet);
@@ -362,13 +373,10 @@ bool SettingsManager::updateFromJson(SettingsBundle& settings, JsonVariantConst 
 
     JsonObjectConst battery = object["battery"];
     if (!battery.isNull()) {
-        if (battery["dividerRatio"].is<float>()) settings.battery.dividerRatio = battery["dividerRatio"].as<float>();
         if (battery["calibrationMultiplier"].is<float>()) settings.battery.calibrationMultiplier = battery["calibrationMultiplier"].as<float>();
-        if (battery["smoothingAlpha"].is<float>()) settings.battery.smoothingAlpha = battery["smoothingAlpha"].as<float>();
-        if (battery["minVoltageClamp"].is<float>()) settings.battery.minVoltageClamp = battery["minVoltageClamp"].as<float>();
-        if (battery["maxVoltageClamp"].is<float>()) settings.battery.maxVoltageClamp = battery["maxVoltageClamp"].as<float>();
         if (battery["updateIntervalMs"].is<uint32_t>()) settings.battery.updateIntervalMs = battery["updateIntervalMs"].as<uint32_t>();
-        if (battery["sampleCount"].is<uint16_t>()) settings.battery.sampleCount = battery["sampleCount"].as<uint16_t>();
+        if (battery["movingAverageWindowSize"].is<uint16_t>()) settings.battery.movingAverageWindowSize = battery["movingAverageWindowSize"].as<uint16_t>();
+        if (battery["sampleCount"].is<uint16_t>()) settings.battery.movingAverageWindowSize = battery["sampleCount"].as<uint16_t>();
     }
 
     JsonObjectConst webAuth = object["webAuth"];
@@ -385,6 +393,7 @@ bool SettingsManager::updateFromJson(SettingsBundle& settings, JsonVariantConst 
         if (oled["i2cAddress"].is<uint8_t>()) settings.oled.i2cAddress = oled["i2cAddress"].as<uint8_t>();
         if (oled["width"].is<uint8_t>()) settings.oled.width = oled["width"].as<uint8_t>();
         if (oled["height"].is<uint8_t>()) settings.oled.height = oled["height"].as<uint8_t>();
+        if (oled["rotation"].is<uint16_t>()) settings.oled.rotation = oled["rotation"].as<uint16_t>();
         if (oled["sdaPin"].is<uint8_t>()) settings.oled.sdaPin = oled["sdaPin"].as<uint8_t>();
         if (oled["sclPin"].is<uint8_t>()) settings.oled.sclPin = oled["sclPin"].as<uint8_t>();
         if (oled["resetPin"].is<int8_t>()) settings.oled.resetPin = oled["resetPin"].as<int8_t>();
@@ -396,6 +405,7 @@ bool SettingsManager::updateFromJson(SettingsBundle& settings, JsonVariantConst 
         copyString(device, "deviceName", settings.device.deviceName);
         copyString(device, "friendlyName", settings.device.friendlyName);
         if (device["savedVolumePercent"].is<uint8_t>()) settings.device.savedVolumePercent = device["savedVolumePercent"].as<uint8_t>();
+        if (device["audioMuted"].is<bool>()) settings.device.audioMuted = device["audioMuted"].as<bool>();
     }
 
     settings = sanitize(settings);
@@ -443,21 +453,36 @@ bool SettingsManager::writeFloatIfChanged(const char* key, float value) {
 }
 
 String SettingsManager::readString(const char* key, const String& fallback) {
+    if (!preferences_.isKey(key)) {
+        return fallback;
+    }
     return preferences_.getString(key, fallback);
 }
 
 bool SettingsManager::readBool(const char* key, bool fallback) {
+    if (!preferences_.isKey(key)) {
+        return fallback;
+    }
     return preferences_.getBool(key, fallback);
 }
 
 uint32_t SettingsManager::readUInt(const char* key, uint32_t fallback) {
+    if (!preferences_.isKey(key)) {
+        return fallback;
+    }
     return preferences_.getUInt(key, fallback);
 }
 
 int32_t SettingsManager::readInt(const char* key, int32_t fallback) {
+    if (!preferences_.isKey(key)) {
+        return fallback;
+    }
     return preferences_.getInt(key, fallback);
 }
 
 float SettingsManager::readFloat(const char* key, float fallback) {
+    if (!preferences_.isKey(key)) {
+        return fallback;
+    }
     return preferences_.getFloat(key, fallback);
 }

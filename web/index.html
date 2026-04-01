@@ -10,9 +10,7 @@
   <div class="wrap">
     <section class="hero">
       <div class="hero-header">
-        <p class="eyebrow">ESP32 Wi-Fi Audio Endpoint</p>
         <h1 id="deviceTitle">ESP32 Notifier</h1>
-        <div id="connectionState">Loading device status...</div>
       </div>
 
       <div class="stats">
@@ -39,7 +37,7 @@
       <section class="panel panel-wide">
         <div class="tabs" role="tablist" aria-label="Notifier tabs">
           <button class="tab-button" type="button" role="tab" aria-selected="true" aria-controls="tab-info" data-tab="info">Info</button>
-          <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="tab-playback" data-tab="playback">Playback</button>
+          <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="tab-playback" data-tab="playback">Audio</button>
           <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="tab-wifi" data-tab="wifi">Wi-Fi</button>
           <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="tab-mqtt" data-tab="mqtt">MQTT</button>
           <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="tab-battery" data-tab="battery">Battery</button>
@@ -66,7 +64,7 @@
         </div>
 
         <div id="tab-playback" class="tab-panel" role="tabpanel">
-          <h2>Playback</h2>
+          <h2>Audio</h2>
           <form id="playForm">
             <div class="row">
               <label>URL
@@ -96,8 +94,10 @@
             </div>
             <div class="volume-card">
               <label for="volumeSlider">Volume <span id="volumeValue">0%</span></label>
-              <input id="volumeSlider" type="range" min="0" max="100" step="1">
+              <input id="volumeSlider" name="device.savedVolumePercent" form="settingsForm" type="range" min="0" max="100" step="1">
             </div>
+            <label class="check"><input id="audioMutedToggle" name="device.audioMuted" form="settingsForm" type="checkbox"> Mute audio and sound effects</label>
+            <p id="audioMutedNote" class="note">Muted by default. This build also keeps stream playback disabled until the audio diagnostic flag is removed.</p>
           </form>
 
           <div class="firmware-list" id="recentPlaybackList"></div>
@@ -114,6 +114,28 @@
                 <div class="password-field">
                   <input name="wifi.password" type="password" autocomplete="new-password">
                   <button class="password-toggle" type="button" data-target-name="wifi.password" aria-label="Show Wi-Fi password">
+                    <span class="eye-icon" aria-hidden="true"></span>
+                  </button>
+                </div>
+              </label>
+            </div>
+            <div class="inline-actions">
+              <button id="scanWifiButton" type="button" class="secondary">Search Wi-Fi</button>
+              <span id="scanStatus" class="scan-status"></span>
+            </div>
+            <label>Found Networks
+              <select id="wifiNetworkList">
+                <option value="">Select a scanned SSID</option>
+              </select>
+            </label>
+            <div class="row">
+              <label>Access Point SSID
+                <input name="wifi.apSsid" type="text" autocomplete="off" placeholder="ESP32-Notifier-XXXXXX">
+              </label>
+              <label>Access Point Password
+                <div class="password-field">
+                  <input name="wifi.apPassword" type="password" autocomplete="new-password" placeholder="configureme">
+                  <button class="password-toggle" type="button" data-target-name="wifi.apPassword" aria-label="Show access point password">
                     <span class="eye-icon" aria-hidden="true"></span>
                   </button>
                 </div>
@@ -140,7 +162,7 @@
             <label class="static-ip-group">DNS 2
               <input name="wifi.dns2" type="text">
             </label>
-            <p class="note">Fallback AP password remains the firmware default. This UI does not edit AP SSID/password because the backend does not expose those settings.</p>
+            <p class="note">Leave Access Point SSID blank to keep the firmware-generated name. Access Point passwords shorter than 8 characters fall back to the default firmware password.</p>
           </form>
         </div>
 
@@ -177,6 +199,10 @@
               </label>
             </div>
             <label class="check"><input form="settingsForm" name="mqtt.discoveryEnabled" type="checkbox"> Publish Home Assistant discovery</label>
+            <div class="inline-actions">
+              <button id="mqttConnectButton" type="button">Connect MQTT</button>
+              <span id="mqttConnectStatus" class="scan-status"></span>
+            </div>
           </form>
         </div>
 
@@ -184,35 +210,22 @@
           <h2>Battery</h2>
           <form>
             <div class="row">
-              <label>Divider Ratio
-                <input form="settingsForm" name="battery.dividerRatio" type="number" step="0.001">
+              <label>Measured Battery Voltage
+                <input id="batteryMeasuredVoltage" type="number" min="0" step="0.001" placeholder="Measure at battery terminals">
               </label>
-              <label>Calibration Multiplier
-                <input form="settingsForm" name="battery.calibrationMultiplier" type="number" step="0.001">
-              </label>
-            </div>
-            <div class="row">
-              <label>Smoothing Alpha
-                <input form="settingsForm" name="battery.smoothingAlpha" type="number" min="0.01" max="1" step="0.01">
-              </label>
-              <label>Sample Count
-                <input form="settingsForm" name="battery.sampleCount" type="number" min="1" max="32">
+              <label>Moving Average Window
+                <input form="settingsForm" name="battery.movingAverageWindowSize" type="number" min="1" max="32">
               </label>
             </div>
-            <div class="row">
-              <label>Min Clamp
-                <input form="settingsForm" name="battery.minVoltageClamp" type="number" step="0.01">
-              </label>
-              <label>Max Clamp
-                <input form="settingsForm" name="battery.maxVoltageClamp" type="number" step="0.01">
-              </label>
-            </div>
+            <input form="settingsForm" name="battery.calibrationMultiplier" type="hidden">
             <label>Update Interval (ms)
               <input form="settingsForm" name="battery.updateIntervalMs" type="number" min="500">
             </label>
+            <p class="note">Measure the real battery voltage with a multimeter, enter it here, and save. The UI converts that value into the stored calibration multiplier using the live raw ADC voltage on GPIO36.</p>
             <div class="firmware-summary compact-summary">
               <div class="firmware-card"><span>Battery</span><strong id="batteryVoltage">-</strong></div>
               <div class="firmware-card"><span>Raw ADC</span><strong id="batteryRaw">-</strong></div>
+              <div class="firmware-card"><span>Derived Multiplier</span><strong id="batteryDerivedMultiplier">-</strong></div>
             </div>
           </form>
         </div>
@@ -252,6 +265,28 @@
           <h2>OLED</h2>
           <form>
             <label class="check"><input form="settingsForm" name="oled.enabled" type="checkbox"> Enable OLED</label>
+            <div class="oled-preview-card">
+              <div class="oled-preview-header">
+                <strong>Virtual OLED</strong>
+                <span id="oledPreviewMeta" class="scan-status">128 x 64</span>
+              </div>
+              <div class="oled-preview-shell">
+                <div id="oledPreview" class="oled-preview-screen">
+                  <div class="oled-preview-top"></div>
+                  <div class="oled-preview-divider oled-preview-divider-top"></div>
+                  <div class="oled-preview-center"></div>
+                  <div id="oledPreviewProgress" class="oled-preview-progress" hidden>
+                    <div id="oledPreviewProgressLabel" class="oled-preview-progress-label">Updating 0%</div>
+                    <div class="oled-preview-progress-bar">
+                      <div id="oledPreviewProgressFill" class="oled-preview-progress-fill"></div>
+                    </div>
+                  </div>
+                  <div class="oled-preview-divider oled-preview-divider-bottom"></div>
+                  <div class="oled-preview-bottom"></div>
+                  <div id="oledPreviewDisabled" class="oled-preview-disabled" hidden>OLED disabled</div>
+                </div>
+              </div>
+            </div>
             <div class="row">
               <label>Driver
                 <select form="settingsForm" name="oled.driver"><option value="ssd1306">SSD1306</option><option value="sh1106">SH1106</option></select>
@@ -269,6 +304,19 @@
               </label>
             </div>
             <div class="row">
+              <label>Rotation
+                <select form="settingsForm" name="oled.rotation">
+                  <option value="0">0 deg</option>
+                  <option value="90">90 deg</option>
+                  <option value="180">180 deg</option>
+                  <option value="270">270 deg</option>
+                </select>
+              </label>
+              <label>Dim Timeout (s)
+                <input form="settingsForm" name="oled.dimTimeoutSeconds" type="number" min="0" max="3600">
+              </label>
+            </div>
+            <div class="row">
               <label>SDA Pin
                 <input form="settingsForm" name="oled.sdaPin" type="number" min="0" max="39">
               </label>
@@ -280,10 +328,9 @@
               <label>Reset Pin
                 <input form="settingsForm" name="oled.resetPin" type="number" min="-1" max="39">
               </label>
-              <label>Dim Timeout (s)
-                <input form="settingsForm" name="oled.dimTimeoutSeconds" type="number" min="0" max="3600">
-              </label>
+              <div></div>
             </div>
+            <p class="note">When rotated 90 or 270 degrees the renderer automatically uses the effective portrait resolution so text and OTA progress fit the rotated screen.</p>
           </form>
         </div>
 
@@ -306,10 +353,15 @@
           <div class="actions">
             <button id="checkOtaButton" type="button">Check OTA</button>
             <button id="applyOtaButton" type="button" class="secondary">Install OTA</button>
+            <button id="uploadFirmwareButton" type="button" class="secondary">Upload Local Firmware</button>
             <button id="reloadButton" type="button" class="secondary">Reload</button>
           </div>
+          <div class="actions actions-inline-text">
+            <span id="localFirmwareLabel" class="scan-status">No local firmware selected</span>
+          </div>
+          <input id="localFirmwareFile" type="file" accept=".bin,application/octet-stream" hidden>
+          <p class="note">Settings auto-save after edits. Number fields accept commas, but they are normalized to dots before saving. Local upload accepts a single ESP32 application .bin and reboots automatically after a successful flash.</p>
           <div class="actions">
-            <button id="saveSettingsButton" type="button">Save Settings</button>
             <button id="rebootButton" type="button" class="secondary">Reboot</button>
             <button id="factoryResetButton" type="button" class="danger">Factory Reset</button>
           </div>

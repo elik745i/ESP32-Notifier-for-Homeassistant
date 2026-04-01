@@ -25,7 +25,7 @@ void WiFiManager::applySettings(const SettingsBundle& settings) {
     if (settings_.device.deviceName.length() > 0) {
         WiFi.setHostname(settings_.device.deviceName.c_str());
     }
-    apSsid_ = defaultApName();
+    apSsid_ = settings_.wifi.apSsid.isEmpty() ? defaultApName() : settings_.wifi.apSsid;
     stopAccessPoint();
     startStation();
 }
@@ -69,7 +69,7 @@ void WiFiManager::startAccessPoint() {
     if (apMode_) {
         return;
     }
-    WiFi.softAP(apSsid_.c_str(), DefaultConfig::WIFI_AP_PASSWORD);
+    WiFi.softAP(apSsid_.c_str(), settings_.wifi.apPassword.c_str());
     dnsServer_.start(DNS_PORT, "*", WiFi.softAPIP());
     dnsStarted_ = true;
     apMode_ = true;
@@ -167,6 +167,61 @@ String WiFiManager::apSsid() const {
 
 int32_t WiFiManager::rssi() const {
     return isConnected() ? WiFi.RSSI() : 0;
+}
+
+WiFiManager::ScanSnapshot WiFiManager::getScanSnapshot() const {
+    const int scanState = WiFi.scanComplete();
+    ScanSnapshot snapshot;
+    snapshot.active = scanState == WIFI_SCAN_RUNNING;
+    snapshot.complete = scanState >= 0;
+    snapshot.failed = lastScanStartedAt_ != 0 && scanState == WIFI_SCAN_FAILED;
+    snapshot.ageMs = lastScanStartedAt_ == 0 ? 0 : millis() - lastScanStartedAt_;
+    return snapshot;
+}
+
+bool WiFiManager::startScan() {
+    const int scanState = WiFi.scanComplete();
+    if (scanState == WIFI_SCAN_RUNNING) {
+        return true;
+    }
+    if (scanState >= 0 || scanState == WIFI_SCAN_FAILED) {
+        WiFi.scanDelete();
+    }
+    WiFi.enableSTA(true);
+    const int scanResult = WiFi.scanNetworks(true, true);
+    if (scanResult == WIFI_SCAN_FAILED) {
+        delay(50);
+        const int retryResult = WiFi.scanNetworks(true, true);
+        if (retryResult == WIFI_SCAN_FAILED) {
+            return false;
+        }
+    }
+    lastScanStartedAt_ = millis();
+    return true;
+}
+
+void WiFiManager::appendScanResultsJson(JsonArray networks) {
+    const int networkCount = WiFi.scanComplete();
+    if (networkCount <= 0) {
+        if (networkCount == WIFI_SCAN_FAILED) {
+            WiFi.scanDelete();
+        }
+        return;
+    }
+
+    for (int index = 0; index < networkCount; ++index) {
+        const String ssid = WiFi.SSID(index);
+        if (ssid.isEmpty()) {
+            continue;
+        }
+
+        JsonObject network = networks.add<JsonObject>();
+        network["ssid"] = ssid;
+        network["rssi"] = WiFi.RSSI(index);
+        network["encrypted"] = WiFi.encryptionType(index) != WIFI_AUTH_OPEN;
+    }
+
+    WiFi.scanDelete();
 }
 
 bool WiFiManager::shouldRedirectCaptivePortal(const String& hostHeader) const {

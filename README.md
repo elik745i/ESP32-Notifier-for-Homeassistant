@@ -40,8 +40,9 @@ The firmware in this repository documents and supports that direction, while kee
 
 The repository builds successfully with PlatformIO and emits [firmware.bin](.pio/build/esp32_notifier/firmware.bin) locally.
 
-The Home Assistant integration currently prioritizes the reliable MQTT URL-command path:
+The Home Assistant integration now exposes the notifier through MQTT discovery as a Home Assistant `media_player` and also supports the direct MQTT URL-command path:
 
+- MQTT `media_player` discovery
 - `play URL`
 - `play TTS URL`
 - `stop`
@@ -54,7 +55,15 @@ The firmware publishes MQTT state for:
 - battery voltage
 - Wi-Fi / network status
 
-Native Home Assistant `media_player` semantics are not fully implemented yet. See the limitations section.
+Current `media_player` scope:
+
+- Home Assistant can auto-discover the notifier as a player entity
+- Home Assistant can send `play_media`, `stop`, and `volume_set` over MQTT
+- playback state and playback metadata are published back through MQTT
+
+Current limitation:
+
+- if the firmware is built with the diagnostic audio-disable flag enabled, the `media_player` entity will still be discovered but playback actions will not start audio until that build flag is removed
 
 ## Dev Board
 
@@ -90,7 +99,7 @@ Known required pins:
 | I2S DOUT | 25 |
 | I2S LRCLK / WS | 26 |
 | I2S BCLK | 27 |
-| OLED SDA | 21 |
+| OLED SDA | 23 |
 | OLED SCL | 19 |
 
 OLED assumptions:
@@ -286,7 +295,7 @@ Persisted values include:
 - MQTT host, port, username, password, client ID, base topic
 - device and friendly name
 - OTA repository, channel, asset template, manifest URL
-- battery divider ratio, calibration, smoothing, clamps, interval, sample count
+- battery calibration multiplier, ADC update interval, moving average window size
 - saved volume
 - OLED settings
 - optional web auth settings
@@ -398,24 +407,44 @@ OTA notes:
 
 Battery monitoring is handled by [src/battery_monitor.cpp](src/battery_monitor.cpp).
 
+Battery input and defaults:
+
+- GPIO pin: `GPIO36`
+- ADC source: ESP32 internal ADC
+- default calibration multiplier: `3.866`
+- default smoothing: moving average
+- default moving average window: `10` samples
+
 Calculation path:
 
-1. `raw ADC` averaged over `sampleCount`
-2. `raw ADC -> ADC pin voltage` using `3.3 V * raw / 4095`
-3. `ADC pin voltage -> battery voltage` using `dividerRatio`
-4. `battery voltage -> calibrated voltage` using `calibrationMultiplier`
-5. spike rejection / clamping to configured voltage limits
-6. exponential smoothing using `smoothingAlpha`
-7. publish filtered voltage to app state and MQTT
+1. read raw ADC from `GPIO36`
+2. convert the raw ADC reading to ADC pin voltage using `3.3 V * raw / 4095`
+3. multiply that voltage by the configured battery correction multiplier
+4. apply a moving average over the configured window size
+5. publish and display the filtered battery voltage
 
 Configurable battery settings:
 
-- divider ratio / multiplier
 - calibration multiplier
-- smoothing alpha
-- min and max clamp
-- update interval
-- sample count
+- ADC update interval
+- moving average window size
+
+The default behavior intentionally matches the previous ESPHome setup as closely as possible:
+
+`raw ADC -> multiply by 3.866 -> moving average over 10 samples -> publish final voltage`
+
+### Recalibration
+
+If the reported battery voltage is off, recalibrate it with a multimeter:
+
+1. Measure the actual battery voltage directly with a multimeter.
+2. Compare that value to the voltage reported in the web UI or MQTT state.
+3. Compute a corrected multiplier:
+
+  `new_multiplier = old_multiplier * (actual_voltage / reported_voltage)`
+
+4. Save the new `calibration multiplier` in the web UI.
+5. Let the moving average settle for about 10 samples before judging the result.
 
 ## OLED Behavior
 

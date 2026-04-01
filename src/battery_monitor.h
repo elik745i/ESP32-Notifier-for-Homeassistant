@@ -2,6 +2,8 @@
 
 #include <Arduino.h>
 
+#include <stdint.h>
+
 #include "app_state.h"
 #include "settings_schema.h"
 
@@ -15,17 +17,22 @@ class BatteryMonitor {
   public:
     void begin(const BatterySettings& settings, uint8_t adcPin, AppState& appState);
     void applySettings(const BatterySettings& settings);
-    void loop();
+    bool loop();
     BatteryReading latest() const;
 
   private:
+    static constexpr uint16_t kMaxWindowSize = 32;
+
     BatterySettings settings_;
     AppState* appState_ = nullptr;
     uint8_t adcPin_ = 36;
     unsigned long lastSampleAt_ = 0;
-    float filteredVoltage_ = 0.0f;
     BatteryReading latest_;
-    bool initialized_ = false;
+    float movingAverageSamples_[kMaxWindowSize] = {};
+    float movingAverageSum_ = 0.0f;
+    uint16_t movingAverageCount_ = 0;
+    uint16_t movingAverageIndex_ = 0;
 
+    void resetFilterState();
     BatteryReading sampleNow();
 };

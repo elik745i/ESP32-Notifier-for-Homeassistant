@@ -9,6 +9,10 @@ HEADER = ROOT / "include" / "generated_web_assets.h"
 SOURCE = ROOT / "src" / "generated_web_assets.cpp"
 
 
+def is_gzip_payload(data: bytes) -> bool:
+    return len(data) >= 2 and data[0] == 0x1F and data[1] == 0x8B
+
+
 def c_array(data: bytes) -> str:
     rows = []
     for offset in range(0, len(data), 16):
@@ -22,14 +26,15 @@ for path in sorted(WEB_DIR.glob("*")):
     if not path.is_file():
         continue
     raw = path.read_bytes()
-    compressed = gzip.compress(raw, compresslevel=9)
+    gzip_encoded = is_gzip_payload(raw)
+    payload = raw if gzip_encoded else gzip.compress(raw, compresslevel=9)
     mime = {
         ".html": "text/html; charset=utf-8",
         ".css": "text/css; charset=utf-8",
         ".js": "application/javascript; charset=utf-8",
     }.get(path.suffix.lower(), "application/octet-stream")
     symbol = path.stem.replace("-", "_") + path.suffix.replace(".", "_")
-    assets.append((path.name, symbol, mime, compressed))
+    assets.append((path.name, symbol, mime, payload, gzip_encoded or is_gzip_payload(payload)))
 
 header_lines = [
     "#pragma once",
@@ -52,11 +57,11 @@ source_lines = [
     "",
 ]
 
-for file_name, symbol, _, compressed in assets:
+for file_name, symbol, _, payload, _ in assets:
     header_lines.append(f"extern const uint8_t {symbol}[];")
     header_lines.append(f"extern const size_t {symbol}_len;")
     source_lines.append(f"const uint8_t {symbol}[] PROGMEM = {{")
-    source_lines.append(f"    {c_array(compressed)}")
+    source_lines.append(f"    {c_array(payload)}")
     source_lines.append("};")
     source_lines.append(f"const size_t {symbol}_len = sizeof({symbol});")
     source_lines.append("")
@@ -65,9 +70,9 @@ header_lines.append("extern const EmbeddedWebAsset WEB_ASSETS[];")
 header_lines.append("extern const size_t WEB_ASSET_COUNT;")
 
 source_lines.append("const EmbeddedWebAsset WEB_ASSETS[] = {")
-for file_name, symbol, mime, _ in assets:
+for file_name, symbol, mime, _, gzip_encoded in assets:
     source_lines.append(
-        f'    {{"/{file_name}", "{mime}", {symbol}, {symbol}_len, true}},'
+        f'    {{"/{file_name}", "{mime}", {symbol}, {symbol}_len, {str(gzip_encoded).lower()}}},'
     )
 source_lines.append("};")
 source_lines.append("const size_t WEB_ASSET_COUNT = sizeof(WEB_ASSETS) / sizeof(WEB_ASSETS[0]);")

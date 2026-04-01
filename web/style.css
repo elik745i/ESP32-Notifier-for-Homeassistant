@@ -4,23 +4,17 @@
   --panel: #ffffff;
   --panel-soft: #f8f8f8;
   --ink: #333333;
-  :root {
-    color-scheme: light;
-    --bg: #f2f2f2;
-    --panel: #ffffff;
-    --panel-soft: #f8f8f8;
-    --ink: #333333;
-    --muted: #6a6a6a;
-    --accent: #f39c12;
-    --accent-strong: #d98200;
-    --accent-soft: #fff4df;
-    --line: #d8d8d8;
-    --warn: #b45309;
-    --ok: #20744b;
-    --danger: #b42318;
-    --shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-    --radius: 12px;
-  }
+  --muted: #6a6a6a;
+  --accent: #f39c12;
+  --accent-strong: #d98200;
+  --accent-soft: #fff4df;
+  --line: #d8d8d8;
+  --warn: #b45309;
+  --ok: #20744b;
+  --danger: #b42318;
+  --shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  --radius: 12px;
+}
 
   * {
     box-sizing: border-box;
@@ -51,14 +45,6 @@
     padding: 16px;
     display: grid;
     gap: 14px;
-  }
-
-  .eyebrow {
-    margin: 0 0 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    font-size: 0.76rem;
-    color: var(--accent);
   }
 
   h1,
@@ -109,6 +95,18 @@
     color: #2d2d2d;
   }
 
+  .stat-value.multiline {
+    line-height: 1.1;
+  }
+
+  .stat-subvalue {
+    display: block;
+    margin-top: 6px;
+    font-size: clamp(0.9rem, 2vw, 1.15rem);
+    font-weight: 500;
+    color: var(--ink);
+  }
+
   .stat-value.ok {
     color: var(--ok);
   }
@@ -119,17 +117,6 @@
 
   .stat-value.bad {
     color: var(--danger);
-  }
-
-  #connectionState {
-    font-size: clamp(0.95rem, 2vw, 1.2rem);
-    line-height: 1.2;
-    min-height: 2.4em;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    text-wrap: balance;
-    white-space: pre-line;
   }
 
   .grid {
@@ -334,6 +321,146 @@
     font-weight: 600;
   }
 
+  .oled-preview-card {
+    display: grid;
+    gap: 10px;
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: linear-gradient(180deg, #f7f7f7 0%, #f0f0f0 100%);
+  }
+
+  .oled-preview-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .oled-preview-shell {
+    display: grid;
+    place-items: center;
+    min-height: 180px;
+    padding: 8px;
+    border-radius: 12px;
+    background: radial-gradient(circle at top, #4a4a4a 0%, #1c1c1c 70%);
+  }
+
+  .oled-preview-screen {
+    position: relative;
+    width: min(100%, 360px);
+    aspect-ratio: 2 / 1;
+    overflow: hidden;
+    border: 4px solid #0e0e0e;
+    border-radius: 10px;
+    background: #041406;
+    color: #e8ffe7;
+    box-shadow: inset 0 0 24px rgba(121, 255, 135, 0.12), 0 8px 18px rgba(0, 0, 0, 0.28);
+    font-family: "Courier New", Courier, monospace;
+  }
+
+  .oled-preview-screen::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image: linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+    background-size: 100% 4px, 4px 100%;
+    opacity: 0.25;
+    pointer-events: none;
+  }
+
+  .oled-preview-screen > * {
+    position: absolute;
+    left: 0;
+    right: 0;
+    z-index: 1;
+  }
+
+  .oled-preview-top,
+  .oled-preview-bottom,
+  .oled-preview-center,
+  .oled-preview-progress-label {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: clip;
+    text-shadow: 0 0 6px rgba(165, 255, 171, 0.35);
+  }
+
+  .oled-preview-top {
+    top: 10px;
+    padding: 0 10px;
+    font-size: 0.78rem;
+  }
+
+  .oled-preview-divider {
+    height: 1px;
+    background: rgba(232, 255, 231, 0.85);
+    left: 8px;
+    right: 8px;
+  }
+
+  .oled-preview-divider-top {
+    top: 28px;
+  }
+
+  .oled-preview-center {
+    top: 38px;
+    padding: 0 10px;
+    font-size: 1.35rem;
+    font-weight: 700;
+    line-height: 1.05;
+  }
+
+  .oled-preview-progress {
+    top: 38px;
+    left: 10px;
+    right: 10px;
+    display: grid;
+    gap: 10px;
+  }
+
+  .oled-preview-progress-label {
+    font-size: 0.78rem;
+  }
+
+  .oled-preview-progress-bar {
+    height: 14px;
+    border: 1px solid rgba(232, 255, 231, 0.95);
+    background: rgba(0, 0, 0, 0.28);
+  }
+
+  .oled-preview-progress-fill {
+    height: 100%;
+    width: 0%;
+    background: #e8ffe7;
+  }
+
+  .oled-preview-divider-bottom {
+    bottom: 20px;
+  }
+
+  .oled-preview-bottom {
+    bottom: 8px;
+    padding: 0 10px;
+    font-size: 0.76rem;
+  }
+
+  .oled-preview-disabled {
+    inset: 0;
+    display: grid;
+    place-items: center;
+    background: rgba(2, 8, 3, 0.78);
+    font-size: 1rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .oled-preview-disabled[hidden],
+  .oled-preview-progress[hidden] {
+    display: none;
+  }
+
   .status-list {
     display: grid;
     gap: 6px;
@@ -437,7 +564,9 @@
 
   .tabs {
     display: flex;
+    flex-direction: row;
     flex-wrap: wrap;
+    align-items: center;
     gap: 8px;
     margin-bottom: 16px;
     padding-bottom: 10px;
@@ -445,6 +574,11 @@
   }
 
   .tab-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: auto;
+    flex: 0 0 auto;
     color: #505050;
     background: #eeeeee;
     box-shadow: none;
@@ -545,5 +679,3 @@
       font-size: 1.25rem;
     }
   }
-  }
-}

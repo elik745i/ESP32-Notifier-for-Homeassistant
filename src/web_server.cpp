@@ -85,6 +85,11 @@ void WebServerManager::registerApiRoutes() {
         JsonObject firmware = doc["firmware"].to<JsonObject>();
         firmware["version"] = APP_VERSION;
         firmware["buildDate"] = APP_BUILD_DATE;
+    #ifdef APP_DISABLE_AUDIO
+        firmware["audioEnabled"] = false;
+    #else
+        firmware["audioEnabled"] = true;
+    #endif
         otaManager_->appendStatusJson(doc["otaManager"].to<JsonObject>());
         sendJson(request, doc);
     });
@@ -95,6 +100,26 @@ void WebServerManager::registerApiRoutes() {
         }
         JsonDocument doc;
         settingsManager_->toJson(settingsGetter_(), doc.to<JsonObject>());
+        sendJson(request, doc);
+    });
+
+    server_.on("/api/wifi/scan", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        if (redirectCaptivePortalIfNeeded(request) || !ensureAuthorized(request)) {
+            return;
+        }
+        JsonDocument doc;
+        const bool start = request->hasParam("start") && request->getParam("start")->value() == "1";
+        if (start) {
+            doc["started"] = wifiManager_->startScan();
+        }
+        const WiFiManager::ScanSnapshot snapshot = wifiManager_->getScanSnapshot();
+        doc["scanning"] = snapshot.active;
+        doc["complete"] = snapshot.complete;
+        doc["failed"] = snapshot.failed;
+        doc["scanAgeMs"] = snapshot.ageMs;
+        if (snapshot.complete) {
+            wifiManager_->appendScanResultsJson(doc["networks"].to<JsonArray>());
+        }
         sendJson(request, doc);
     });
 
@@ -211,6 +236,44 @@ void WebServerManager::registerApiRoutes() {
             sendJson(request, response);
         });
 
+    server_.on(
+        "/api/firmware/upload", HTTP_POST,
+        [this](AsyncWebServerRequest* request) {
+            if (redirectCaptivePortalIfNeeded(request) || !ensureAuthorized(request)) {
+                return;
+            }
+            JsonDocument response;
+            JsonObject ota = response["ota"].to<JsonObject>();
+            otaManager_->appendStatusJson(ota);
+            const String selectedVersion = String(static_cast<const char*>(ota["selectedVersion"] | ""));
+            const String message = String(static_cast<const char*>(ota["message"] | ""));
+            if (selectedVersion == "local" && message.startsWith("Local firmware uploaded")) {
+                response["ok"] = true;
+                response["message"] = message;
+                sendJson(request, response, 200);
+                return;
+            }
+            response["error"] = message.isEmpty() ? "Firmware upload did not complete." : message;
+            sendJson(request, response, 400);
+        },
+        [this](AsyncWebServerRequest* request, const String& filename, size_t index, uint8_t* data, size_t len, bool final) {
+            if (redirectCaptivePortalIfNeeded(request) || !ensureAuthorized(request)) {
+                return;
+            }
+            String error;
+            if (index == 0) {
+                if (!otaManager_->beginLocalUpload(filename, request->contentLength(), error)) {
+                    return;
+                }
+            }
+            if (len > 0 && !otaManager_->writeLocalUploadChunk(data, len, error)) {
+                return;
+            }
+            if (final && !otaManager_->finishLocalUpload(error)) {
+                return;
+            }
+        });
+
     server_.on("/api/reboot", HTTP_POST, [this](AsyncWebServerRequest* request) {
         if (redirectCaptivePortalIfNeeded(request) || !ensureAuthorized(request)) {
             return;
@@ -241,8 +304,11 @@ void WebServerManager::registerWebRoutes() {
         AsyncWebServerResponse* response = request->beginResponse(200, asset->contentType, asset->data, asset->size);
         if (asset->gzip) {
             response->addHeader("Content-Encoding", "gzip");
+            response->addHeader("Vary", "Accept-Encoding");
         }
-        response->addHeader("Cache-Control", "public, max-age=300");
+        response->addHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+        response->addHeader("Pragma", "no-cache");
+        response->addHeader("Expires", "0");
         request->send(response);
     };
 

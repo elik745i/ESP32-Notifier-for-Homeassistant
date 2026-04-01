@@ -9,6 +9,20 @@ String payloadToString(char* payload, size_t len) {
     }
     return value;
 }
+
+String normalizeMediaType(String mediaType) {
+    mediaType.toLowerCase();
+    if (mediaType.indexOf("tts") >= 0 || mediaType.indexOf("announce") >= 0) {
+        return "tts";
+    }
+    if (mediaType.indexOf("stream") >= 0 || mediaType.indexOf("music") >= 0 || mediaType.indexOf("audio") >= 0 || mediaType.indexOf("url") >= 0) {
+        return "stream";
+    }
+    if (mediaType == "media") {
+        return "media";
+    }
+    return mediaType.isEmpty() ? String("stream") : mediaType;
+}
 }  // namespace
 
 void MqttManager::begin(const SettingsBundle& settings, AppState& appState, WiFiManager& wifiManager, CommandHandler commandHandler) {
@@ -64,6 +78,8 @@ void MqttManager::handleConnected(bool sessionPresent) {
         appState_->setMqttConnected(true);
     }
     client_.publish(HaBridge::availabilityTopic(settings_).c_str(), 1, true, "online");
+    client_.subscribe(HaBridge::playerCommandTopic(settings_).c_str(), 1);
+    client_.subscribe(HaBridge::playerPlayMediaTopic(settings_).c_str(), 1);
     client_.subscribe(HaBridge::commandTopic(settings_, "play").c_str(), 1);
     client_.subscribe(HaBridge::commandTopic(settings_, "tts").c_str(), 1);
     client_.subscribe(HaBridge::commandTopic(settings_, "stop").c_str(), 1);
@@ -88,6 +104,49 @@ void MqttManager::handleMessage(char* topic, char* payload, AsyncMqttClientMessa
     const String topicValue = topic;
     const String payloadValue = payloadToString(payload, len);
     PlaybackCommand command;
+    if (topicValue == HaBridge::playerCommandTopic(settings_)) {
+        String action = payloadValue;
+        action.trim();
+        action.toUpperCase();
+        if (action == "STOP") {
+            command.action = "stop";
+            commandHandler_(command);
+            return;
+        }
+        if (action == "PLAY") {
+            const AppStateSnapshot snapshot = appState_ != nullptr ? appState_->snapshot() : AppStateSnapshot();
+            if (snapshot.playback.url.isEmpty()) {
+                return;
+            }
+            command.action = "play";
+            command.url = snapshot.playback.url;
+            command.label = snapshot.playback.title;
+            command.mediaType = snapshot.playback.type.isEmpty() ? String("stream") : snapshot.playback.type;
+            commandHandler_(command);
+            return;
+        }
+    }
+
+    if (topicValue == HaBridge::playerPlayMediaTopic(settings_)) {
+        command.action = "play";
+        if (payloadValue.startsWith("{")) {
+            JsonDocument doc;
+            if (deserializeJson(doc, payloadValue) == DeserializationError::Ok) {
+                command.url = String(static_cast<const char*>(doc["url"] | doc["media_id"] | ""));
+                command.label = String(static_cast<const char*>(doc["label"] | doc["title"] | doc["media_id"] | ""));
+                command.mediaType = normalizeMediaType(String(static_cast<const char*>(doc["type"] | doc["media_type"] | "stream")));
+            }
+        } else {
+            command.url = payloadValue;
+            command.label = payloadValue;
+            command.mediaType = "stream";
+        }
+        if (!command.url.isEmpty()) {
+            commandHandler_(command);
+        }
+        return;
+    }
+
     if (topicValue == HaBridge::commandTopic(settings_, "stop")) {
         command.action = "stop";
         commandHandler_(command);
@@ -114,7 +173,7 @@ void MqttManager::handleMessage(char* topic, char* payload, AsyncMqttClientMessa
         if (deserializeJson(doc, payloadValue) == DeserializationError::Ok) {
             command.url = String(static_cast<const char*>(doc["url"] | ""));
             command.label = String(static_cast<const char*>(doc["label"] | ""));
-            command.mediaType = String(static_cast<const char*>(doc["type"] | (command.action == "tts" ? "tts" : "stream")));
+            command.mediaType = normalizeMediaType(String(static_cast<const char*>(doc["type"] | (command.action == "tts" ? "tts" : "stream"))));
         }
     } else {
         command.url = payloadValue;
@@ -159,18 +218,20 @@ void MqttManager::publishState() {
 
     JsonDocument battery;
     battery["voltage"] = snapshot.battery.voltage;
+    battery["rawAdcVoltage"] = snapshot.battery.rawAdcVoltage;
     battery["rawAdc"] = snapshot.battery.rawAdc;
     publishJson(HaBridge::batteryStateTopic(settings_), battery, true);
 
-    client_.publish((settings_.mqtt.baseTopic + "/state/volume").c_str(), 1, true, String(snapshot.playback.volumePercent).c_str());
+    client_.publish(HaBridge::playerVolumeStateTopic(settings_).c_str(), 1, true, String(snapshot.playback.volumePercent).c_str());
 }
 
-void MqttManager::publishBattery(float voltage, uint16_t rawAdc) {
+void MqttManager::publishBattery(float voltage, float rawAdcVoltage, uint16_t rawAdc) {
     if (!client_.connected()) {
         return;
     }
     JsonDocument battery;
     battery["voltage"] = voltage;
+    battery["rawAdcVoltage"] = rawAdcVoltage;
     battery["rawAdc"] = rawAdc;
     publishJson(HaBridge::batteryStateTopic(settings_), battery, true);
 }
@@ -189,8 +250,11 @@ void MqttManager::publishDiscovery() {
         HaBridge::discoveryTopic(settings_, "sensor", "playback_state").c_str(), 1, true,
         HaBridge::discoveryPayloadSensor(settings_, "playback_state", "Playback State", HaBridge::playbackStateTopic(settings_).c_str(), "{{ value_json.state }}", nullptr, nullptr, nullptr, "mdi:speaker-wireless").c_str());
     client_.publish(
+        HaBridge::discoveryTopic(settings_, "media_player", "notifier").c_str(), 1, true,
+        HaBridge::discoveryPayloadMediaPlayer(settings_, "notifier", settings_.device.friendlyName.c_str(), "mdi:speaker-wireless").c_str());
+    client_.publish(
         HaBridge::discoveryTopic(settings_, "number", "volume").c_str(), 1, true,
-        HaBridge::discoveryPayloadNumber(settings_, "volume", "Notifier Volume", (settings_.mqtt.baseTopic + "/state/volume").c_str(), HaBridge::commandTopic(settings_, "volume").c_str(), 0, 100, 1, "%", "mdi:volume-high").c_str());
+        HaBridge::discoveryPayloadNumber(settings_, "volume", "Notifier Volume", HaBridge::playerVolumeStateTopic(settings_).c_str(), HaBridge::commandTopic(settings_, "volume").c_str(), 0, 100, 1, "%", "mdi:volume-high").c_str());
     client_.publish(
         HaBridge::discoveryTopic(settings_, "button", "stop").c_str(), 1, true,
         HaBridge::discoveryPayloadButton(settings_, "stop", "Stop Playback", HaBridge::commandTopic(settings_, "stop").c_str(), "stop", "mdi:stop").c_str());

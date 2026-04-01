@@ -72,6 +72,7 @@ void loop() {
 #include "mqtt_manager.h"
 #include "ota_manager.h"
 #include "settings_manager.h"
+#include "sound_effects.h"
 #include "version.h"
 #include "web_server.h"
 #include "wifi_manager.h"
@@ -79,8 +80,15 @@ void loop() {
 #ifdef APP_DISABLE_AUDIO
 class AudioPlayerStub {
   public:
-    void begin(uint8_t, uint8_t, uint8_t, uint8_t, AppState& appState) {
-        appState.setPlayback("idle", "idle", "Audio disabled", "", "disabled", 0);
+    void begin(uint8_t, uint8_t, uint8_t, uint8_t initialVolumePercent, AppState& appState) {
+        appState_ = &appState;
+        volume_ = initialVolumePercent;
+        state_ = "idle";
+        type_ = "idle";
+        title_ = "Audio disabled";
+        url_ = "";
+        source_ = "disabled";
+        publish();
     }
 
     void loop() {}
@@ -89,9 +97,36 @@ class AudioPlayerStub {
         return false;
     }
 
-    void stop() {}
+    void stop() {
+    state_ = "idle";
+    type_ = "idle";
+    title_ = "Audio disabled";
+    url_ = "";
+    source_ = "disabled";
+    publish();
+    }
 
-    void setVolumePercent(uint8_t) {}
+    void setVolumePercent(uint8_t volumePercent) {
+        volume_ = volumePercent;
+        publish();
+    }
+
+        uint8_t volumePercent() const { return volume_; }
+
+    private:
+    void publish() {
+        if (appState_ != nullptr) {
+            appState_->setPlayback(state_, type_, title_, url_, source_, volume_);
+        }
+    }
+
+    AppState* appState_ = nullptr;
+        uint8_t volume_ = DefaultConfig::DEFAULT_VOLUME_PERCENT;
+    String state_ = "idle";
+    String type_ = "idle";
+    String title_ = "Audio disabled";
+    String url_;
+    String source_ = "disabled";
 };
 
 using AudioPlayerType = AudioPlayerStub;
@@ -111,12 +146,31 @@ AudioPlayerType* audioPlayer = nullptr;
 OtaManager* otaManager = nullptr;
 MqttManager* mqttManager = nullptr;
 WebServerManager* webServer = nullptr;
+SoundEffectsManager* soundEffects = nullptr;
+
+struct DeferredActions {
+    bool settingsApplyPending = false;
+    SettingsBundle pendingSettings;
+    bool playPending = false;
+    bool stopPending = false;
+    bool volumePending = false;
+    uint8_t pendingVolume = 0;
+    String playUrl;
+    String playLabel;
+    String playType;
+    String playSource;
+};
+
+DeferredActions* deferredActions = nullptr;
 
 bool rebootRequested = false;
 bool factoryResetRequested = false;
 unsigned long rebootAt = 0;
 unsigned long lastHeapUpdateAt = 0;
-unsigned long lastMqttBatteryAt = 0;
+bool previousWifiConnected = false;
+bool previousMqttConnected = false;
+String previousPlaybackState = "idle";
+bool transitionStateInitialized = false;
 
 const char* resetReasonToString(esp_reset_reason_t reason) {
     switch (reason) {
@@ -188,10 +242,16 @@ bool initializeRuntimeObjects() {
     if (webServer == nullptr) {
         webServer = new WebServerManager();
     }
+    if (soundEffects == nullptr) {
+        soundEffects = new SoundEffectsManager();
+    }
+    if (deferredActions == nullptr) {
+        deferredActions = new DeferredActions();
+    }
 
     return appState != nullptr && settingsManager != nullptr && settings != nullptr && wifiManager != nullptr &&
            batteryMonitor != nullptr && displayManager != nullptr && audioPlayer != nullptr && otaManager != nullptr &&
-           mqttManager != nullptr && webServer != nullptr;
+           mqttManager != nullptr && webServer != nullptr && soundEffects != nullptr && deferredActions != nullptr;
 }
 
 void applyRuntimeSettings() {
@@ -200,6 +260,7 @@ void applyRuntimeSettings() {
     batteryMonitor->applySettings(settings->battery);
     displayManager->applySettings(settings->oled);
     audioPlayer->setVolumePercent(settings->device.savedVolumePercent);
+    soundEffects->applySettings(*settings);
     mqttManager->applySettings(*settings);
     otaManager->applySettings(*settings);
 }
@@ -209,9 +270,8 @@ bool saveSettingsFromJson(JsonVariantConst root, String& error) {
     if (!settingsManager->updateFromJson(updated, root, error)) {
         return false;
     }
-    settingsManager->save(updated);
-    *settings = settingsManager->load();
-    applyRuntimeSettings();
+    deferredActions->pendingSettings = updated;
+    deferredActions->settingsApplyPending = true;
     return true;
 }
 
@@ -220,15 +280,16 @@ bool playRequest(const String& url, const String& label, const String& type, Str
         error = "URL is required";
         return false;
     }
-    if (!audioPlayer->play(url, label, type, type == "tts" ? "home-assistant" : "manual")) {
 #ifdef APP_DISABLE_AUDIO
-        error = "Audio disabled in diagnostic build";
-#else
-        error = "Failed to start playback";
+    error = "Audio disabled in diagnostic build";
+    return false;
 #endif
-        return false;
-    }
-    mqttManager->publishState();
+    deferredActions->playUrl = url;
+    deferredActions->playLabel = label;
+    deferredActions->playType = type;
+    deferredActions->playSource = type == "tts" ? "home-assistant" : "manual";
+    deferredActions->playPending = true;
+    deferredActions->stopPending = false;
     return true;
 }
 
@@ -238,12 +299,52 @@ void handleMqttCommand(const PlaybackCommand& command) {
     } else if (command.action == "volume") {
         settings->device.savedVolumePercent = command.volumePercent;
         audioPlayer->setVolumePercent(command.volumePercent);
+        soundEffects->setVolumePercent(command.volumePercent);
         settingsManager->save(*settings);
     } else {
         String ignored;
         playRequest(command.url, command.label, command.mediaType.isEmpty() ? command.action : command.mediaType, ignored);
     }
     mqttManager->publishState();
+}
+
+void processDeferredActions() {
+    if (deferredActions == nullptr) {
+        return;
+    }
+
+    if (deferredActions->settingsApplyPending) {
+        settingsManager->save(deferredActions->pendingSettings);
+        *settings = settingsManager->load();
+        applyRuntimeSettings();
+        deferredActions->settingsApplyPending = false;
+        mqttManager->publishState();
+    }
+
+    if (deferredActions->stopPending) {
+        audioPlayer->stop();
+        deferredActions->stopPending = false;
+        mqttManager->publishState();
+    }
+
+    if (deferredActions->volumePending) {
+        settings->device.savedVolumePercent = deferredActions->pendingVolume;
+        audioPlayer->setVolumePercent(deferredActions->pendingVolume);
+        soundEffects->setVolumePercent(deferredActions->pendingVolume);
+        settingsManager->save(*settings);
+        deferredActions->volumePending = false;
+        mqttManager->publishState();
+    }
+
+    if (deferredActions->playPending) {
+        audioPlayer->play(
+            deferredActions->playUrl,
+            deferredActions->playLabel,
+            deferredActions->playType,
+            deferredActions->playSource);
+        deferredActions->playPending = false;
+        mqttManager->publishState();
+    }
 }
 
 }  // namespace
@@ -293,6 +394,9 @@ void setup() {
     logBootStage("audio begin");
     audioPlayer->begin(DefaultConfig::I2S_BCLK_PIN, DefaultConfig::I2S_WS_PIN, DefaultConfig::I2S_DOUT_PIN, settings->device.savedVolumePercent, *appState);
 
+    logBootStage("sound effects begin");
+    soundEffects->begin(*settings);
+
     logBootStage("ota begin");
     otaManager->begin(*settings, *appState);
 
@@ -309,14 +413,12 @@ void setup() {
         saveSettingsFromJson,
         playRequest,
         []() {
-            audioPlayer->stop();
-            mqttManager->publishState();
+            deferredActions->stopPending = true;
+            deferredActions->playPending = false;
         },
         [](uint8_t volume) {
-            settings->device.savedVolumePercent = volume;
-            audioPlayer->setVolumePercent(volume);
-            settingsManager->save(*settings);
-            mqttManager->publishState();
+            deferredActions->pendingVolume = volume;
+            deferredActions->volumePending = true;
         },
         [](bool apply) { return otaManager->triggerCheck(apply); },
         []() { scheduleReboot(500); },
@@ -326,7 +428,41 @@ void setup() {
         });
 
     displayManager->setBootMessage("Idle");
+    soundEffects->playBoot();
     logBootStage("setup complete");
+}
+
+void processSoundEffectTransitions(const AppStateSnapshot& snapshot) {
+    if (soundEffects == nullptr) {
+        return;
+    }
+    if (!transitionStateInitialized) {
+        previousWifiConnected = snapshot.network.wifiConnected;
+        previousMqttConnected = snapshot.network.mqttConnected;
+        previousPlaybackState = snapshot.playback.state;
+        transitionStateInitialized = true;
+        return;
+    }
+
+    if (!previousWifiConnected && snapshot.network.wifiConnected) {
+        soundEffects->playWifiConnected();
+    } else if (previousWifiConnected && !snapshot.network.wifiConnected) {
+        soundEffects->playWifiDisconnected();
+    }
+
+    if (!previousMqttConnected && snapshot.network.mqttConnected) {
+        soundEffects->playMqttConnected();
+    }
+
+    if (previousPlaybackState != "playing" && snapshot.playback.state == "playing") {
+        soundEffects->playPlaybackStart();
+    } else if (previousPlaybackState == "playing" && snapshot.playback.state != "playing") {
+        soundEffects->playPlaybackStop();
+    }
+
+    previousWifiConnected = snapshot.network.wifiConnected;
+    previousMqttConnected = snapshot.network.mqttConnected;
+    previousPlaybackState = snapshot.playback.state;
 }
 
 void loop() {
@@ -337,13 +473,15 @@ void loop() {
         return;
     }
 
+    processDeferredActions();
     wifiManager->loop();
     audioPlayer->loop();
-    batteryMonitor->loop();
+    const bool batteryUpdated = batteryMonitor->loop();
     otaManager->loop();
     mqttManager->loop();
 
     const AppStateSnapshot snapshot = appState->snapshot();
+    processSoundEffectTransitions(snapshot);
     displayManager->loop(snapshot);
 
     if (millis() - lastHeapUpdateAt > 5000UL) {
@@ -352,10 +490,9 @@ void loop() {
         digitalWrite(DefaultConfig::STATUS_LED_PIN, (wifiManager->isConnected() && mqttManager->isConnected()) ? HIGH : (millis() / 300UL) % 2);
     }
 
-    if (millis() - lastMqttBatteryAt > settings->battery.updateIntervalMs) {
-        lastMqttBatteryAt = millis();
+    if (batteryUpdated) {
         const BatteryReading reading = batteryMonitor->latest();
-        mqttManager->publishBattery(reading.filteredVoltage, reading.rawAdc);
+        mqttManager->publishBattery(reading.filteredVoltage, reading.rawAdcVoltage, reading.rawAdc);
         mqttManager->publishState();
     }
 

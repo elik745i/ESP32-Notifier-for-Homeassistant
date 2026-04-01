@@ -2,6 +2,8 @@
 
 #include <Audio.h>
 
+#include "default_config.h"
+
 namespace {
 AudioPlayer::Impl* g_impl = nullptr;
 
@@ -18,7 +20,7 @@ class AudioPlayer::Impl {
   public:
     Audio audio;
     AppState* appState = nullptr;
-    uint8_t volume = 60;
+        uint8_t volume = DefaultConfig::DEFAULT_VOLUME_PERCENT;
     String state = "idle";
     String type = "idle";
     String title = "Idle";
