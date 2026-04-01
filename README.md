@@ -14,6 +14,28 @@ PlatformIO firmware for an ESP32-based Wi-Fi audio notifier / speaker with:
 
 This project is not ESPHome. It is a custom modular PlatformIO firmware baseline intended to be realistic, buildable, and extendable.
 
+## Project Overview
+
+This notifier project is based on the third hardware iteration of a Home Assistant speaker / notifier build.
+
+The main design goal of that iteration was to simplify the previous versions and make the system more practical for day-to-day use:
+
+- low-voltage operation instead of bulkier higher-voltage amplifier setups
+- reduced heat inside a printed enclosure
+- less interference and easier wiring
+- battery-capable operation
+- the ability to drive an existing passive ceiling speaker when needed
+- a compact all-in-one Home Assistant audio endpoint without adding a separate Bluetooth speaker
+
+The intended usage is broader than simple beeps. The device is meant to handle:
+
+- Home Assistant speech and notification playback
+- soft background music
+- internet radio streams
+- compact room audio for built-in speakers or powered speakers
+
+The firmware in this repository documents and supports that direction, while keeping the implementation focused on maintainable ESP32 firmware modules.
+
 ## Current Status
 
 The repository builds successfully with PlatformIO and emits [firmware.bin](.pio/build/esp32_notifier/firmware.bin) locally.
@@ -37,6 +59,14 @@ Native Home Assistant `media_player` semantics are not fully implemented yet. Se
 ## Dev Board
 
 This project is intended around the Wemos / LOLIN32 Lite style ESP32 board.
+
+The original hardware write-up also references the LOLIN32 Mini class board family because those boards integrate useful battery features such as:
+
+- Li-Po connector
+- charger circuitry
+- battery protection
+
+That makes them a practical fit for a compact battery-backed notifier. One important note from the hardware overview is that battery-voltage measurement still requires an external divider on a free ADC-capable GPIO.
 
 Reference links and local documentation:
 
@@ -68,6 +98,39 @@ OLED assumptions:
 - 0.96 inch I2C OLED
 - SSD1306 128x64 or SH1106 128x64
 - default I2C address `0x3C`
+
+## Hardware Modules
+
+The project overview describes a compact module stack built around readily available boards:
+
+- ESP32 LOLIN32 Lite / Mini style controller board
+- UDA1334 I2S stereo DAC / audio driver
+- PAM8403 class-D amplifier module
+- Li-Po battery pack
+- passive speaker, including in-ceiling speaker use cases
+
+Why this combination was chosen:
+
+- the ESP32 board provides Wi-Fi, battery charging convenience, and low-power control logic
+- the UDA1334 cleanly handles I2S audio output without forcing a specific integrated amplifier choice
+- the PAM8403 is small, cheap, and good enough for notifier duty even if it is not an audiophile amplifier
+- the battery-backed design makes the notifier easier to place without depending on a permanently available external supply
+
+## Parts and Resources
+
+The project overview explicitly calls out these practical resources:
+
+- Main board family: LOLIN32 Lite / Mini style ESP32 board
+- Audio DAC: UDA1334 I2S stereo module
+- Amplifier: PAM8403 class-D amplifier board
+- Power: Li-Po battery pack, approximately `1800 mAh` in the example build
+- Extra passive components: bulk capacitor and wiring as needed
+
+Related external references mentioned in the overview:
+
+- Home Assistant community schematic / discussion: https://community.home-assistant.io/t/i2s-stereo-to-play-mp3-tts-from-flash-on-boot/594740/6?u=elik745i
+- Older notifier discussion: https://community.home-assistant.io/t/turn-an-esp8266-wemosd1mini-into-an-audio-notifier-for-home-assistant-play-mp3-tts-rttl/211499/224?u=elik745i
+- External 3D model reference mentioned in the overview: https://www.thingiverse.com/thing:6910612
 
 ## Project Layout
 
@@ -162,6 +225,19 @@ The page allows you to:
 
 The visual structure and Wi-Fi provisioning flow intentionally follow the same practical template style used in your pressure transducer project.
 
+## Enclosure and Assembly
+
+The project overview describes a compact printed enclosure workflow:
+
+- reuse existing 3D models where practical
+- create custom CAD when no suitable enclosure exists
+- confirm dimensions from PCB photos, caliper measurements, and known reference spacing
+- secure the finished modules inside the enclosure with adhesive mounting rather than complicated brackets
+
+Repository-local enclosure resources are available in [3D](3D).
+
+The hardware story in the overview is useful context here: the case design was driven by the desire to keep the notifier compact, battery-friendly, and resistant to the heat problems caused by earlier amplifier choices.
+
 ## Hardwired Defaults and Saved Settings
 
 Compile-time defaults live in [include/default_config.h](include/default_config.h).
@@ -249,6 +325,15 @@ Practical TTS options right now:
 3. Optionally use the included `script.esp32_notifier_speak_url` helper as the HA wrapper.
 
 Media and radio playback are straightforward today because they are already URL-based.
+
+## Sound Quality Notes
+
+The original project overview includes two useful real-world expectations:
+
+- with a basic passive ceiling speaker, the goal is practical speech and light background audio rather than hi-fi playback
+- when connected to better powered speakers, the UDA1334-based I2S path can sound noticeably better than expected for such a small and inexpensive module stack
+
+That matches the intended role of this firmware: reliable notifier and room-audio endpoint first, rather than a full-featured audiophile streamer.
 
 ## OTA From GitHub Releases
 
@@ -341,6 +426,7 @@ After reset:
 - OTA installs are functional but still conservative: the preferred secure path is a manifest with SHA256.
 - Web auth is basic HTTP auth, not a complete role-based access model.
 - The current firmware focuses on output-only audio. No microphone or duplex audio path is implemented.
+- The original Russian overview also mentions two-way voice communication as a broader idea, but that is not implemented in this firmware baseline.
 
 ## GitHub Push Readiness
 
@@ -362,3 +448,4 @@ git commit -m "Initial ESP32 notifier firmware"
 git remote add origin https://github.com/elik745i/ESP32-Notifier-for-Homeassistant.git
 git push -u origin main
 ```
+
