@@ -18,6 +18,31 @@ bool mqttReconnectRequired(const SettingsBundle& current, const SettingsBundle& 
            current.mqtt.clientId != next.mqtt.clientId ||
            current.device.deviceName != next.device.deviceName;
 }
+
+String normalizeMediaType(const String& value, bool announce) {
+    String mediaType = value;
+    mediaType.trim();
+    mediaType.toLowerCase();
+
+    if (announce || mediaType.indexOf("tts") >= 0 || mediaType.indexOf("announce") >= 0 || mediaType.indexOf("speech") >= 0) {
+        return "tts";
+    }
+
+    if (mediaType.isEmpty()) {
+        return "stream";
+    }
+
+    if (mediaType == "music" || mediaType == "audio" || mediaType == "stream" || mediaType == "media" || mediaType == "radio") {
+        return "stream";
+    }
+
+    return mediaType;
+}
+
+uint8_t percentFromVolumeLevel(float level) {
+    const float clamped = level < 0.0f ? 0.0f : (level > 1.0f ? 1.0f : level);
+    return static_cast<uint8_t>((clamped * 100.0f) + 0.5f);
+}
 }  // namespace
 
 void MqttManager::begin(const SettingsBundle& settings, AppState& appState, WiFiManager& wifiManager, CommandHandler commandHandler) {
@@ -149,10 +174,16 @@ void MqttManager::handleMessage(char* topic, char* payload, AsyncMqttClientMessa
         if (payloadValue.startsWith("{")) {
             JsonDocument doc;
             if (deserializeJson(doc, payloadValue) == DeserializationError::Ok) {
-                command.volumePercent = doc["volumePercent"] | doc["volume"] | 0;
+                if (!doc["volumePercent"].isNull() || !doc["volume"].isNull()) {
+                    command.volumePercent = doc["volumePercent"] | doc["volume"] | 0;
+                } else if (!doc["volume_level"].isNull()) {
+                    command.volumePercent = percentFromVolumeLevel(doc["volume_level"] | 0.0f);
+                }
             }
         } else {
-            command.volumePercent = payloadValue.toInt();
+            command.volumePercent = payloadValue.indexOf('.') >= 0
+                ? percentFromVolumeLevel(payloadValue.toFloat())
+                : payloadValue.toInt();
         }
         commandHandler_(command);
         return;
@@ -162,9 +193,14 @@ void MqttManager::handleMessage(char* topic, char* payload, AsyncMqttClientMessa
     if (payloadValue.startsWith("{")) {
         JsonDocument doc;
         if (deserializeJson(doc, payloadValue) == DeserializationError::Ok) {
-            command.url = String(static_cast<const char*>(doc["url"] | ""));
-            command.label = String(static_cast<const char*>(doc["label"] | ""));
-            command.mediaType = String(static_cast<const char*>(doc["type"] | (command.action == "tts" ? "tts" : "stream")));
+            const bool announce = doc["announce"] | false;
+            const String mediaContentType = String(static_cast<const char*>(doc["media_content_type"] | doc["media_type"] | ""));
+            const String explicitType = String(static_cast<const char*>(doc["type"] | ""));
+            command.url = String(static_cast<const char*>(doc["url"] | doc["media_content_id"] | doc["media_id"] | ""));
+            command.label = String(static_cast<const char*>(doc["label"] | doc["title"] | doc["media_title"] | doc["extra"]["title"] | ""));
+            command.mediaType = normalizeMediaType(
+                explicitType.isEmpty() ? mediaContentType : explicitType,
+                command.action == "tts" || announce);
         }
     } else {
         command.url = payloadValue;

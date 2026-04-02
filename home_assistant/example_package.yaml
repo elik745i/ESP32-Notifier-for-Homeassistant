@@ -96,15 +96,16 @@ media_player:
           label: "{{ states('sensor.esp32_notifier_current_title') }}"
           type: stream
       play_media:
-        action: script.esp32_notifier_play_url
+        action: script.esp32_notifier_play_media
         data:
-          url: "{{ media_content_id }}"
-          label: "{{ media_content_id }}"
-          type: >-
-            {% if media_content_type is string and 'tts' in media_content_type | lower %}
-              tts
+          media_content_id: "{{ media_content_id }}"
+          media_content_type: "{{ media_content_type | default('music', true) }}"
+          announce: "{{ announce | default(false) }}"
+          title: >-
+            {% if extra is mapping and extra.title is defined and extra.title %}
+              {{ extra.title }}
             {% else %}
-              stream
+              {{ media_content_id }}
             {% endif %}
       volume_set:
         action: script.esp32_notifier_set_volume
@@ -143,6 +144,38 @@ script:
               'url': url,
               'label': label | default('', true),
               'type': type | default('stream', true)
+            } | tojson }}
+
+  esp32_notifier_play_media:
+    alias: ESP32 Notifier Play Media
+    description: Accepts Home Assistant media-player style fields and forwards them to the notifier MQTT bridge.
+    mode: restart
+    fields:
+      media_content_id:
+        required: true
+        selector:
+          text:
+      media_content_type:
+        selector:
+          text:
+      announce:
+        selector:
+          boolean:
+      title:
+        selector:
+          text:
+    sequence:
+      - action: mqtt.publish
+        data:
+          topic: esp32_notifier/cmd/play
+          qos: 1
+          retain: false
+          payload: >-
+            {{ {
+              'media_content_id': media_content_id,
+              'media_content_type': media_content_type | default('music', true),
+              'announce': announce | default(false),
+              'title': title | default('', true)
             } | tojson }}
 
   esp32_notifier_stop:

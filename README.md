@@ -53,7 +53,7 @@ Recent firmware and web UI updates included in this version:
 - Wi-Fi station connect now prefers the strongest matching BSSID when several mesh nodes share the same SSID
 - volume changes now update playback immediately while deferring NVS persistence to avoid interrupting active streams
 
-The Home Assistant integration supports the direct MQTT URL-command path and includes Home Assistant example configuration for wrapping the notifier as a player entity from HA:
+The Home Assistant integration supports the direct MQTT URL-command path and includes Home Assistant example configuration for wrapping the notifier as a Home Assistant player entity:
 
 - `play URL`
 - `play TTS URL`
@@ -69,8 +69,8 @@ The firmware publishes MQTT state for:
 
 Current limitation:
 
-- current Home Assistant versions do not provide a native MQTT `media_player` platform, so the notifier does not appear as a player entity from MQTT discovery alone
-- use the included Home Assistant package examples to create a wrapper player entity inside Home Assistant
+- current Home Assistant MQTT discovery still does not create a native `media_player` entity for this firmware on its own
+- use the included Home Assistant package example to create a wrapper player entity inside Home Assistant while still using the notifier's built-in MQTT topics
 - if the firmware is built with the diagnostic audio-disable flag enabled, playback actions will not start audio until that build flag is removed
 
 ## Dev Board
@@ -358,20 +358,21 @@ Example HA files are included in [home_assistant](home_assistant).
 Current integration paths:
 
 1. Use MQTT discovery to add the notifier's sensors, number, button, and text entities.
-2. Use the included scripts and helper entities for direct URL play, stop, and volume.
-3. If you want the notifier to appear in Home Assistant's media-player list, create a Home Assistant-side wrapper media player using the included example package.
-4. If your TTS engine can expose a direct MP3 or stream URL, publish that URL to `cmd/tts` or route it through the HA wrapper player.
+2. Use the included package to create a Home Assistant `universal` wrapper `media_player` that targets the notifier's MQTT bridge.
+3. The wrapper supports `play_media`, `media_stop`, and `volume_set` and forwards Home Assistant-style media payloads into the notifier's existing MQTT command topics.
+4. If your TTS engine can expose a direct MP3 or stream URL, publish that URL to `cmd/tts` or route it through the wrapper player's `play_media` call.
 
 Current Home Assistant wrapper scope:
 
 - Home Assistant can expose the notifier as a `media_player` by wrapping the MQTT entities and scripts with a `universal` media player.
-- Home Assistant can send `play_media`, `media_stop`, and `volume_set` through that wrapper.
+- The included wrapper now accepts Home Assistant-style `play_media` fields such as `media_content_id`, `media_content_type`, optional `extra.title`, and `announce`.
 - Playback state, title, URL, and volume are still published back from the notifier over MQTT.
 
 Important current limitation:
 
-- Home Assistant's higher-level `tts.speak` workflows may still depend on the exact `media_content_type` and payload shape your HA version sends.
+- Because Home Assistant MQTT discovery does not natively create a `media_player` for this device, the wrapper package is still required for the notifier to appear in the media-player list.
 - The notifier is most reliable today with direct URL-based playback, whether that URL comes from a script, HA automation, or the HA wrapper `play_media` action.
+- For TTS, the best path is still a directly reachable audio URL. If Home Assistant passes `announce: true`, the wrapper/firmware path now marks the playback as `tts`.
 - If the firmware is built with `APP_DISABLE_AUDIO=1`, the HA-side wrapper player will exist but playback actions will not produce sound.
 
 Practical TTS options right now:
@@ -496,7 +497,7 @@ After reset:
 
 ## Known Limitations
 
-- Home Assistant no longer exposes a native MQTT `media_player` integration, so a Home Assistant-side wrapper entity is required if you want this notifier to appear in the media-player list.
+- Home Assistant MQTT discovery still does not auto-create a native `media_player` entity for this firmware, so a Home Assistant-side wrapper entity is required if you want this notifier to appear in the media-player list.
 - The notifier is still most robust when driven by direct URL playback over MQTT.
 - Audio playback support is centered on the selected audio library's stream capabilities; some edge-case codecs and playlists may still need tuning.
 - Firmware size is now very close to the OTA slot limit, so future feature additions will likely require code trimming or a different partition strategy.

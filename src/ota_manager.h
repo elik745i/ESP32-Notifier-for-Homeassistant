@@ -49,8 +49,11 @@ class OtaManager {
     AppState* appState_ = nullptr;
     volatile bool pendingCheck_ = false;
     volatile bool pendingApply_ = false;
-      String pendingInstallVersion_;
+    volatile bool pendingReleaseRefresh_ = false;
+    String pendingInstallVersion_;
     bool busy_ = false;
+    bool releaseRefreshInProgress_ = false;
+    String releaseRefreshError_;
     String lastMessage_ = "idle";
     String latestVersion_;
     bool updateAvailable_ = false;
@@ -69,6 +72,7 @@ class OtaManager {
     void (*progressCallback_)() = nullptr;
 
     void runTask(bool applyAfterCheck);
+    void runReleaseRefreshTask();
     void runVersionTask(const String& version);
     CheckResult checkNow();
     bool fetchAvailableReleases(bool refresh, String& error);

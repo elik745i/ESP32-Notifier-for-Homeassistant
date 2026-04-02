@@ -93,6 +93,11 @@ void OtaManager::loop() {
         rebootPending_ = false;
         ESP.restart();
     }
+    if (pendingReleaseRefresh_ && !busy_ && !releaseRefreshInProgress_) {
+        pendingReleaseRefresh_ = false;
+        runReleaseRefreshTask();
+        return;
+    }
     if (!pendingInstallVersion_.isEmpty() && !busy_) {
         const String version = pendingInstallVersion_;
         pendingInstallVersion_ = "";
@@ -254,9 +259,23 @@ void OtaManager::appendFirmwareInfoJson(JsonObject root, bool refresh, String& e
     root["updateProgress"] = progressPercent_;
     root["updateBytes"] = progressBytes_;
     root["updateTotalBytes"] = progressTotalBytes_;
+    root["releaseRefreshPending"] = pendingReleaseRefresh_;
+    root["releaseRefreshInProgress"] = releaseRefreshInProgress_;
 
-    if (fetchAvailableReleases(refresh, error)) {
-        root["latestVersion"] = latestVersion_;
+    if (refresh) {
+        if (busy_) {
+            error = "Another update is already in progress.";
+        } else {
+            pendingReleaseRefresh_ = true;
+            releaseRefreshError_ = "";
+            lastMessage_ = "queued release refresh";
+            root["updateStatus"] = lastMessage_;
+            root["releaseRefreshPending"] = true;
+        }
+    }
+
+    root["latestVersion"] = latestVersion_;
+    if (!releaseCache_.empty()) {
         JsonArray releases = root["releases"].to<JsonArray>();
         for (const ReleaseInfo& release : releaseCache_) {
             JsonObject item = releases.add<JsonObject>();
@@ -270,11 +289,13 @@ void OtaManager::appendFirmwareInfoJson(JsonObject root, bool refresh, String& e
             item["isLatest"] = release.isLatest;
             item["isNew"] = release.isNew;
         }
-        return;
     }
 
-    root["latestVersion"] = latestVersion_;
-    root["error"] = error;
+    if (!error.isEmpty()) {
+        root["error"] = error;
+    } else if (!releaseRefreshError_.isEmpty()) {
+        root["error"] = releaseRefreshError_;
+    }
 }
 
 bool OtaManager::triggerInstallVersion(const String& version, String& error) {
@@ -295,6 +316,27 @@ bool OtaManager::triggerInstallVersion(const String& version, String& error) {
     lastMessage_ = String("queued install ") + normalizedVersion;
     syncAppState("queued");
     return true;
+}
+
+void OtaManager::runReleaseRefreshTask() {
+    releaseRefreshInProgress_ = true;
+    releaseRefreshError_ = "";
+    lastMessage_ = "checking releases";
+    syncAppState("checking releases");
+
+    String error;
+    const bool success = fetchAvailableReleases(true, error);
+
+    releaseRefreshInProgress_ = false;
+    if (success) {
+        lastMessage_ = releaseCache_.empty() ? "No firmware releases found." : "Firmware releases refreshed";
+        syncAppState("releases refreshed");
+        return;
+    }
+
+    releaseRefreshError_ = error;
+    lastMessage_ = error;
+    syncAppState("release refresh failed", error);
 }
 
 void OtaManager::runTask(bool applyAfterCheck) {

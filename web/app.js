@@ -975,9 +975,11 @@ function renderBatteryHero(voltage) {
   elements.batteryHero.innerHTML = `
     <div class="battery-hero-widget battery-${levelClass}" aria-label="Battery ${percent}%">
       <div class="battery-shell">
+        <div class="battery-body">
+          <div class="battery-fill" style="width: ${fillWidth}%;"></div>
+          <div class="battery-percent">${percent}%</div>
+        </div>
         <div class="battery-terminal"></div>
-        <div class="battery-fill" style="width: ${fillWidth}%;"></div>
-        <div class="battery-percent">${percent}%</div>
       </div>
       <div class="battery-meta">${numericVoltage.toFixed(2)} V</div>
     </div>
@@ -1210,7 +1212,17 @@ async function refreshFirmwareInfo(forceRefresh = false) {
   }
 
   try {
-    const info = await request(forceRefresh ? "/api/firmware?refresh=1" : "/api/firmware");
+    let info = await request(forceRefresh ? "/api/firmware?refresh=1" : "/api/firmware");
+    let refreshPollAttempts = forceRefresh ? 24 : 0;
+
+    while (refreshPollAttempts > 0 && (info.releaseRefreshPending || info.releaseRefreshInProgress)) {
+      elements.otaStatusLabel.textContent = "Checking releases...";
+      showFirmwareListStatus("Checking available firmware releases...");
+      await new Promise((resolve) => window.setTimeout(resolve, 500));
+      info = await request("/api/firmware");
+      refreshPollAttempts -= 1;
+    }
+
     const currentVersion = info.currentVersion || state.status?.firmware?.version || "-";
     const latestVersion = info.latestVersion || "No release";
     state.firmwareReleases = Array.isArray(info.releases) ? info.releases : state.firmwareReleases;
