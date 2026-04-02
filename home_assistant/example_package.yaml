@@ -10,57 +10,52 @@ input_number:
     max: 100
     step: 1
 
-sensor:
-  - platform: mqtt
-    name: ESP32 Notifier Playback State
-    unique_id: esp32_notifier_playback_state_package
-    state_topic: esp32_notifier/state/playback
-    value_template: "{{ value_json.state }}"
+mqtt:
+  sensor:
+    - name: ESP32 Notifier Playback State
+      unique_id: esp32_notifier_playback_state_package
+      state_topic: esp32_notifier/state/playback
+      value_template: "{{ value_json.state }}"
 
-  - platform: mqtt
-    name: ESP32 Notifier Current Title
-    unique_id: esp32_notifier_current_title_package
-    state_topic: esp32_notifier/state/playback
-    value_template: "{{ value_json.title }}"
+    - name: ESP32 Notifier Current Title
+      unique_id: esp32_notifier_current_title_package
+      state_topic: esp32_notifier/state/playback
+      value_template: "{{ value_json.title }}"
 
-  - platform: mqtt
-    name: ESP32 Notifier Battery Voltage
-    unique_id: esp32_notifier_battery_voltage_package
-    state_topic: esp32_notifier/state/battery
-    device_class: voltage
-    unit_of_measurement: V
-    state_class: measurement
-    suggested_display_precision: 2
-    value_template: "{{ value_json.voltage | float(0) | round(2) }}"
+    - name: ESP32 Notifier Battery Voltage
+      unique_id: esp32_notifier_battery_voltage_package
+      state_topic: esp32_notifier/state/battery
+      device_class: voltage
+      unit_of_measurement: V
+      state_class: measurement
+      suggested_display_precision: 2
+      value_template: "{{ value_json.voltage | float(0) | round(2) }}"
 
-  - platform: mqtt
-    name: ESP32 Notifier Wi-Fi RSSI
-    unique_id: esp32_notifier_wifi_rssi_package
-    state_topic: esp32_notifier/state/network
-    device_class: signal_strength
-    unit_of_measurement: dBm
-    state_class: measurement
-    value_template: "{{ value_json.wifiRssi }}"
+    - name: ESP32 Notifier Wi-Fi RSSI
+      unique_id: esp32_notifier_wifi_rssi_package
+      state_topic: esp32_notifier/state/network
+      device_class: signal_strength
+      unit_of_measurement: dBm
+      state_class: measurement
+      value_template: "{{ value_json.wifiRssi }}"
 
-binary_sensor:
-  - platform: mqtt
-    name: ESP32 Notifier Online
-    unique_id: esp32_notifier_online_package
-    state_topic: esp32_notifier/availability
-    payload_on: online
-    payload_off: offline
+  binary_sensor:
+    - name: ESP32 Notifier Online
+      unique_id: esp32_notifier_online_package
+      state_topic: esp32_notifier/availability
+      payload_on: online
+      payload_off: offline
 
-number:
-  - platform: mqtt
-    name: ESP32 Notifier Volume Raw
-    unique_id: esp32_notifier_volume_raw_package
-    state_topic: esp32_notifier/state/volume
-    command_topic: esp32_notifier/cmd/volume
-    min: 0
-    max: 100
-    step: 1
-    command_template: >-
-      {{ {'volumePercent': value | int } | tojson }}
+  number:
+    - name: ESP32 Notifier Volume Raw
+      unique_id: esp32_notifier_volume_raw_package
+      state_topic: esp32_notifier/state/volume
+      command_topic: esp32_notifier/cmd/volume
+      min: 0
+      max: 100
+      step: 1
+      command_template: >-
+        {{ {'volumePercent': value | int } | tojson }}
 
 template:
   - sensor:

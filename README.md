@@ -362,6 +362,30 @@ Current integration paths:
 3. The wrapper supports `play_media`, `media_stop`, and `volume_set` and forwards Home Assistant-style media payloads into the notifier's existing MQTT command topics.
 4. If your TTS engine can expose a direct MP3 or stream URL, publish that URL to `cmd/tts` or route it through the wrapper player's `play_media` call.
 
+Step-by-step Home Assistant setup:
+
+1. Install and configure the Home Assistant MQTT integration so it connects to the same broker as the notifier.
+2. In `configuration.yaml`, enable packages if you do not already use them:
+
+```yaml
+homeassistant:
+  packages: !include_dir_named packages
+```
+
+3. Create a package file such as `packages/esp32_notifier.yaml` in your Home Assistant config directory.
+4. Copy the contents of [home_assistant/example_package.yaml](home_assistant/example_package.yaml) into that package file.
+5. If your notifier uses a custom MQTT base topic, replace the default `esp32_notifier/...` topics in the package with your configured base topic.
+6. Restart Home Assistant so the package is loaded.
+7. Verify the wrapper entities appear, especially the online binary sensor, playback state sensor, volume number, and the `ESP32 Notifier` media player.
+8. Test playback first with a direct MP3 URL through the `media_player.play_media` action before testing TTS.
+9. Test volume with the `media_player.volume_set` action using Home Assistant's `0..1` scale.
+10. For TTS, prefer a flow that produces a directly reachable audio URL and send it through the wrapper player or the included speak helper script.
+
+Important package syntax note:
+
+- Current Home Assistant versions expect MQTT YAML entities under a top-level `mqtt:` key in packages.
+- Older `platform: mqtt` under `sensor:`, `binary_sensor:`, or `number:` will trigger Home Assistant repair warnings and should not be used.
+
 Current Home Assistant wrapper scope:
 
 - Home Assistant can expose the notifier as a `media_player` by wrapping the MQTT entities and scripts with a `universal` media player.
