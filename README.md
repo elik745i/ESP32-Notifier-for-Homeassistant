@@ -362,6 +362,7 @@ Example HA files are included in [home_assistant](home_assistant).
 Recommended media-player integration:
 
 - Use [`bkbilly/mqtt_media_player`](https://github.com/bkbilly/mqtt_media_player) from HACS with the `esp32_notifier_hacs` firmware build.
+- A vendored backup copy of that integration is included under [home_assistant/custom_components/mqtt_media_player](home_assistant/custom_components/mqtt_media_player) in case the upstream repository becomes unavailable.
 - Keep Home Assistant's core MQTT integration enabled so the notifier can publish discovery, state, and command topics through your broker.
 - Use `esp32_notifier_hacs_slim` only if you explicitly want a no-web fallback build.
 
