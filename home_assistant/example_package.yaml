@@ -30,7 +30,8 @@ sensor:
     device_class: voltage
     unit_of_measurement: V
     state_class: measurement
-    value_template: "{{ value_json.voltage }}"
+    suggested_display_precision: 2
+    value_template: "{{ value_json.voltage | float(0) | round(2) }}"
 
   - platform: mqtt
     name: ESP32 Notifier Wi-Fi RSSI

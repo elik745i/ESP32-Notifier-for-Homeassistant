@@ -32,12 +32,23 @@ void WiFiManager::begin(const SettingsBundle& settings, AppState& appState) {
     WiFi.mode(WIFI_MODE_APSTA);
     WiFi.setAutoReconnect(true);
     WiFi.setSleep(false);
+    if (disconnectEventId_ == 0) {
+        disconnectEventId_ = WiFi.onEvent(
+            [this](arduino_event_id_t, arduino_event_info_t info) { handleDisconnectEvent(info); },
+            ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+    }
     applySettings(settings);
 }
 
 void WiFiManager::applySettings(const SettingsBundle& settings) {
     const bool needsRestart = !initialized_ || wifiRestartRequired(settings_, settings);
     settings_ = settings;
+    if (!hasStaCredentials()) {
+        consecutiveFailureCount_ = 0;
+        recoveryRebootRecommended_ = false;
+        lastDisconnectReasonValid_ = false;
+        clearFrontendError();
+    }
     if (settings_.device.deviceName.length() > 0) {
         WiFi.setHostname(settings_.device.deviceName.c_str());
     }
@@ -58,6 +69,10 @@ void WiFiManager::startStation() {
     delay(100);
     if (!hasStaCredentials()) {
         stationAttemptActive_ = false;
+        consecutiveFailureCount_ = 0;
+        recoveryRebootRecommended_ = false;
+        lastDisconnectReasonValid_ = false;
+        clearFrontendError();
         startAccessPoint();
         updateAppState();
         return;
@@ -82,6 +97,8 @@ void WiFiManager::startStation() {
     stationAttemptActive_ = true;
     connectAttemptStartedAt_ = millis();
     lastConnectAttemptAt_ = connectAttemptStartedAt_;
+    Serial.printf("[wifi] connect attempt %u/%u to ssid='%s'\n", static_cast<unsigned>(consecutiveFailureCount_ + 1),
+                  static_cast<unsigned>(WIFI_MAX_CONSECUTIVE_FAILURES), settings_.wifi.ssid.c_str());
     updateAppState();
 }
 
@@ -118,10 +135,17 @@ void WiFiManager::loop() {
     const bool connected = WiFi.status() == WL_CONNECTED;
     if (connected) {
         if (!hadConnection_) {
+            if (consecutiveFailureCount_ > 0) {
+                Serial.printf("[wifi] connected after %u failed attempt(s)\n", static_cast<unsigned>(consecutiveFailureCount_));
+            }
             stopAccessPoint();
         }
         hadConnection_ = true;
         stationAttemptActive_ = false;
+        consecutiveFailureCount_ = 0;
+        recoveryRebootRecommended_ = false;
+        lastDisconnectReasonValid_ = false;
+        clearFrontendError();
         updateAppState();
         return;
     }
@@ -136,6 +160,7 @@ void WiFiManager::loop() {
     const unsigned long now = millis();
     if (stationAttemptActive_ && now - connectAttemptStartedAt_ > WIFI_CONNECT_TIMEOUT_MS) {
         stationAttemptActive_ = false;
+        registerFailedAttempt("timeout");
         startAccessPoint();
     }
 
@@ -146,8 +171,128 @@ void WiFiManager::loop() {
     updateAppState();
 }
 
+bool WiFiManager::shouldRebootForRecovery() const {
+    return recoveryRebootRecommended_;
+}
+
+uint8_t WiFiManager::consecutiveFailureCount() const {
+    return consecutiveFailureCount_;
+}
+
 bool WiFiManager::hasStaCredentials() const {
     return !settings_.wifi.ssid.isEmpty();
+}
+
+void WiFiManager::registerFailedAttempt(const char* reason) {
+    if (!hasStaCredentials()) {
+        consecutiveFailureCount_ = 0;
+        recoveryRebootRecommended_ = false;
+        lastDisconnectReasonValid_ = false;
+        return;
+    }
+
+    if (consecutiveFailureCount_ < WIFI_MAX_CONSECUTIVE_FAILURES) {
+        ++consecutiveFailureCount_;
+    }
+
+    const char* disconnectReasonName = lastDisconnectReasonValid_ ? WiFi.disconnectReasonName(lastDisconnectReason_) : "unknown";
+    Serial.printf("[wifi] connect failed trigger=%s wifi_reason=%s(%d) count=%u/%u\n", reason,
+                  disconnectReasonName,
+                  static_cast<int>(lastDisconnectReason_),
+                  static_cast<unsigned>(consecutiveFailureCount_),
+                  static_cast<unsigned>(WIFI_MAX_CONSECUTIVE_FAILURES));
+
+    if (lastDisconnectReasonValid_ && isCredentialFailureReason(lastDisconnectReason_)) {
+        setFrontendError("Wi-Fi credentials were rejected for saved network '" + settings_.wifi.ssid + "'.");
+        recoveryRebootRecommended_ = false;
+        return;
+    }
+
+    if (lastDisconnectReasonValid_ && isNetworkMissingReason(lastDisconnectReason_)) {
+        setFrontendError("Saved Wi-Fi network '" + settings_.wifi.ssid + "' is not available.");
+        recoveryRebootRecommended_ = false;
+        return;
+    }
+
+    if (consecutiveFailureCount_ >= WIFI_MAX_CONSECUTIVE_FAILURES) {
+        if (isConfiguredNetworkVisible()) {
+            clearFrontendError();
+            recoveryRebootRecommended_ = true;
+            Serial.println("[wifi] max consecutive failures reached with saved network visible, recovery reboot recommended");
+        } else {
+            setFrontendError("Saved Wi-Fi network '" + settings_.wifi.ssid + "' is not visible. Reboot skipped.");
+            recoveryRebootRecommended_ = false;
+            Serial.println("[wifi] max consecutive failures reached but saved network is not visible, reboot skipped");
+        }
+    }
+}
+
+bool WiFiManager::isConfiguredNetworkVisible() {
+    if (!hasStaCredentials()) {
+        return false;
+    }
+
+    const int existingScanState = WiFi.scanComplete();
+    if (existingScanState == WIFI_SCAN_RUNNING) {
+        WiFi.scanDelete();
+    }
+
+    WiFi.enableSTA(true);
+    const int networkCount = WiFi.scanNetworks(false, true);
+    if (networkCount <= 0) {
+        WiFi.scanDelete();
+        return false;
+    }
+
+    bool visible = false;
+    for (int index = 0; index < networkCount; ++index) {
+        if (WiFi.SSID(index) == settings_.wifi.ssid) {
+            visible = true;
+            break;
+        }
+    }
+
+    WiFi.scanDelete();
+    return visible;
+}
+
+bool WiFiManager::isCredentialFailureReason(wifi_err_reason_t reason) const {
+    switch (reason) {
+        case WIFI_REASON_AUTH_EXPIRE:
+        case WIFI_REASON_AUTH_LEAVE:
+        case WIFI_REASON_NOT_AUTHED:
+        case WIFI_REASON_ASSOC_NOT_AUTHED:
+        case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
+        case WIFI_REASON_802_1X_AUTH_FAILED:
+        case WIFI_REASON_AUTH_FAIL:
+        case WIFI_REASON_HANDSHAKE_TIMEOUT:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool WiFiManager::isNetworkMissingReason(wifi_err_reason_t reason) const {
+    return reason == WIFI_REASON_NO_AP_FOUND;
+}
+
+void WiFiManager::clearFrontendError() {
+    if (appState_ != nullptr) {
+        appState_->setLastError("");
+    }
+}
+
+void WiFiManager::setFrontendError(const String& message) {
+    if (appState_ != nullptr) {
+        appState_->setLastError(message);
+    }
+}
+
+void WiFiManager::handleDisconnectEvent(arduino_event_info_t info) {
+    lastDisconnectReason_ = static_cast<wifi_err_reason_t>(info.wifi_sta_disconnected.reason);
+    lastDisconnectReasonValid_ = true;
+    Serial.printf("[wifi] disconnect event reason=%s(%d)\n", WiFi.disconnectReasonName(lastDisconnectReason_),
+                  static_cast<int>(lastDisconnectReason_));
 }
 
 void WiFiManager::updateAppState() {

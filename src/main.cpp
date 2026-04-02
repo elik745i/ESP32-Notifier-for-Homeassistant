@@ -168,6 +168,7 @@ bool rebootRequested = false;
 bool factoryResetRequested = false;
 unsigned long rebootAt = 0;
 unsigned long lastHeapUpdateAt = 0;
+bool recoveryRebootScheduled = false;
 bool previousWifiConnected = false;
 bool previousMqttConnected = false;
 String previousPlaybackState = "idle";
@@ -520,6 +521,22 @@ void loop() {
     if (factoryResetRequested) {
         settingsManager->reset();
         factoryResetRequested = false;
+    }
+
+    if (!recoveryRebootScheduled && wifiManager->shouldRebootForRecovery()) {
+        recoveryRebootScheduled = true;
+        Serial.printf("[recovery] scheduling reboot after %u failed Wi-Fi attempts\n",
+                      static_cast<unsigned>(wifiManager->consecutiveFailureCount()));
+        Serial.flush();
+        scheduleReboot(1000);
+    }
+
+    if (!recoveryRebootScheduled && mqttManager->shouldRebootForRecovery()) {
+        recoveryRebootScheduled = true;
+        Serial.printf("[recovery] scheduling reboot after %u failed MQTT attempts\n",
+                      static_cast<unsigned>(mqttManager->consecutiveFailureCount()));
+        Serial.flush();
+        scheduleReboot(1000);
     }
 
     if (rebootRequested && static_cast<long>(millis() - rebootAt) >= 0) {

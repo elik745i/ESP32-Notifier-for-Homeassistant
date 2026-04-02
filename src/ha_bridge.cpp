@@ -65,7 +65,7 @@ String discoveryPayloadSensor(const SettingsBundle& settings, const char* object
     if (deviceClass != nullptr) doc["dev_cla"] = deviceClass;
     if (stateClass != nullptr) doc["stat_cla"] = stateClass;
     if (icon != nullptr) doc["ic"] = icon;
-    if (suggestedDisplayPrecision >= 0) doc["sug_dsp_prc"] = suggestedDisplayPrecision;
+    if (suggestedDisplayPrecision >= 0) doc["suggested_display_precision"] = suggestedDisplayPrecision;
     fillDevice(settings, doc["dev"].to<JsonObject>());
     String out;
     serializeJson(doc, out);

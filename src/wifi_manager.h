@@ -5,6 +5,7 @@
 #include <DNSServer.h>
 #include <IPAddress.h>
 #include <WiFi.h>
+#include <esp_wifi_types.h>
 
 #include "app_state.h"
 #include "settings_schema.h"
@@ -24,6 +25,8 @@ class WiFiManager {
 
     bool isConnected() const;
     bool isApMode() const;
+    bool shouldRebootForRecovery() const;
+    uint8_t consecutiveFailureCount() const;
     IPAddress localIp() const;
     IPAddress apIp() const;
     String currentSsid() const;
@@ -38,6 +41,7 @@ class WiFiManager {
     static constexpr uint16_t DNS_PORT = 53;
     static constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 20000;
     static constexpr uint32_t WIFI_RETRY_INTERVAL_MS = 15000;
+    static constexpr uint8_t WIFI_MAX_CONSECUTIVE_FAILURES = 10;
 
     SettingsBundle settings_;
     AppState* appState_ = nullptr;
@@ -47,10 +51,15 @@ class WiFiManager {
     bool apMode_ = false;
     bool stationAttemptActive_ = false;
     bool hadConnection_ = false;
+    bool recoveryRebootRecommended_ = false;
     bool lastScanCompleted_ = false;
+    bool lastDisconnectReasonValid_ = false;
+    uint8_t consecutiveFailureCount_ = 0;
     unsigned long connectAttemptStartedAt_ = 0;
     unsigned long lastConnectAttemptAt_ = 0;
     unsigned long lastScanStartedAt_ = 0;
+    wifi_event_id_t disconnectEventId_ = 0;
+    wifi_err_reason_t lastDisconnectReason_ = WIFI_REASON_UNSPECIFIED;
     String apSsid_;
 
     void startStation();
@@ -58,4 +67,11 @@ class WiFiManager {
     void stopAccessPoint();
     void updateAppState();
     bool hasStaCredentials() const;
+    bool isConfiguredNetworkVisible();
+    bool isCredentialFailureReason(wifi_err_reason_t reason) const;
+    bool isNetworkMissingReason(wifi_err_reason_t reason) const;
+    void clearFrontendError();
+    void setFrontendError(const String& message);
+    void handleDisconnectEvent(arduino_event_info_t info);
+    void registerFailedAttempt(const char* reason);
 };

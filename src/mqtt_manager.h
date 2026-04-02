@@ -23,8 +23,12 @@ class MqttManager {
     bool isConnected() const;
     bool requestConnect(String& error);
     bool requestDisconnect(String& error);
+    bool shouldRebootForRecovery() const;
+    uint8_t consecutiveFailureCount() const;
 
   private:
+    static constexpr uint8_t MQTT_MAX_CONSECUTIVE_FAILURES = 10;
+
     AsyncMqttClient client_;
     SettingsBundle settings_;
     AppState* appState_ = nullptr;
@@ -32,6 +36,8 @@ class MqttManager {
     CommandHandler commandHandler_;
     bool configured_ = false;
     bool connectionEnabled_ = true;
+    bool recoveryRebootRecommended_ = false;
+    uint8_t consecutiveFailureCount_ = 0;
     unsigned long lastConnectAttemptAt_ = 0;
     unsigned long lastStatePublishAt_ = 0;
 
@@ -41,4 +47,8 @@ class MqttManager {
     void handleDisconnected(AsyncMqttClientDisconnectReason reason);
     void handleMessage(char* topic, char* payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total);
     void publishJson(const String& topic, const JsonDocument& doc, bool retained);
+    bool isCredentialFailureReason(AsyncMqttClientDisconnectReason reason) const;
+    void clearFrontendError();
+    void setFrontendError(const String& message);
+    void registerFailedAttempt(AsyncMqttClientDisconnectReason reason);
 };

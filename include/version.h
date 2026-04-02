@@ -1,5 +1,5 @@
 #pragma once
 
 #define APP_NAME "ESP32 Notifier"
-#define APP_VERSION "0.1.3"
+#define APP_VERSION "0.1.4"
 #define APP_BUILD_DATE __DATE__ " " __TIME__

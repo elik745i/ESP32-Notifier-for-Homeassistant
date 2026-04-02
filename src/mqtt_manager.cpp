@@ -36,6 +36,10 @@ void MqttManager::begin(const SettingsBundle& settings, AppState& appState, WiFi
 void MqttManager::applySettings(const SettingsBundle& settings) {
     const bool needsReconfigure = !configured_ || mqttReconnectRequired(settings_, settings) || !client_.connected();
     settings_ = settings;
+    if (settings_.mqtt.host.isEmpty()) {
+        consecutiveFailureCount_ = 0;
+        recoveryRebootRecommended_ = false;
+    }
     if (needsReconfigure) {
         configureClient();
         configured_ = true;
@@ -58,13 +62,20 @@ void MqttManager::configureClient() {
     client_.setKeepAlive(30);
     client_.setWill(HaBridge::availabilityTopic(settings_).c_str(), 1, true, "offline");
     lastConnectAttemptAt_ = 0;
+    if (settings_.mqtt.host.isEmpty()) {
+        consecutiveFailureCount_ = 0;
+        recoveryRebootRecommended_ = false;
+    }
 
     if (!connectionEnabled_) {
         return;
     }
 
     if (!settings_.mqtt.host.isEmpty() && wifiManager_ != nullptr && wifiManager_->isConnected()) {
-        Serial.printf("[mqtt] immediate reconnect to %s:%u\n", settings_.mqtt.host.c_str(), settings_.mqtt.port);
+        Serial.printf("[mqtt] immediate reconnect attempt %u/%u to %s:%u\n",
+                      static_cast<unsigned>(consecutiveFailureCount_ + 1),
+                      static_cast<unsigned>(MQTT_MAX_CONSECUTIVE_FAILURES),
+                      settings_.mqtt.host.c_str(), settings_.mqtt.port);
         lastConnectAttemptAt_ = millis();
         client_.connect();
     }
@@ -84,7 +95,10 @@ void MqttManager::connectIfNeeded() {
     if (millis() - lastConnectAttemptAt_ < 5000UL) {
         return;
     }
-    Serial.printf("[mqtt] connect attempt to %s:%u\n", settings_.mqtt.host.c_str(), settings_.mqtt.port);
+    Serial.printf("[mqtt] connect attempt %u/%u to %s:%u\n",
+                  static_cast<unsigned>(consecutiveFailureCount_ + 1),
+                  static_cast<unsigned>(MQTT_MAX_CONSECUTIVE_FAILURES),
+                  settings_.mqtt.host.c_str(), settings_.mqtt.port);
     lastConnectAttemptAt_ = millis();
     client_.connect();
 }
@@ -92,6 +106,9 @@ void MqttManager::connectIfNeeded() {
 void MqttManager::handleConnected(bool sessionPresent) {
     (void)sessionPresent;
     Serial.printf("[mqtt] connected host=%s port=%u\n", settings_.mqtt.host.c_str(), settings_.mqtt.port);
+    consecutiveFailureCount_ = 0;
+    recoveryRebootRecommended_ = false;
+    clearFrontendError();
     if (appState_ != nullptr) {
         appState_->setMqttConnected(true);
     }
@@ -106,10 +123,10 @@ void MqttManager::handleConnected(bool sessionPresent) {
 
 void MqttManager::handleDisconnected(AsyncMqttClientDisconnectReason reason) {
     Serial.printf("[mqtt] disconnected reason=%d\n", static_cast<int>(reason));
-    (void)reason;
     if (appState_ != nullptr) {
         appState_->setMqttConnected(false);
     }
+    registerFailedAttempt(reason);
 }
 
 void MqttManager::handleMessage(char* topic, char* payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total) {
@@ -216,7 +233,7 @@ void MqttManager::publishDiscovery() {
     }
     client_.publish(
         HaBridge::discoveryTopic(settings_, "sensor", "battery_voltage").c_str(), 1, true,
-        HaBridge::discoveryPayloadSensor(settings_, "battery_voltage", "Battery Voltage", HaBridge::batteryStateTopic(settings_).c_str(), "{{ value_json.voltage }}", "V", "voltage", "measurement", "mdi:battery", 2).c_str());
+        HaBridge::discoveryPayloadSensor(settings_, "battery_voltage", "Battery Voltage", HaBridge::batteryStateTopic(settings_).c_str(), "{{ value_json.voltage | float(0) | round(2) }}", "V", "voltage", "measurement", "mdi:battery", 2).c_str());
     client_.publish(
         HaBridge::discoveryTopic(settings_, "sensor", "wifi_rssi").c_str(), 1, true,
         HaBridge::discoveryPayloadSensor(settings_, "wifi_rssi", "Wi-Fi RSSI", HaBridge::networkStateTopic(settings_).c_str(), "{{ value_json.wifiRssi }}", "dBm", "signal_strength", "measurement", "mdi:wifi").c_str());
@@ -236,6 +253,14 @@ void MqttManager::publishDiscovery() {
 
 bool MqttManager::isConnected() const {
     return client_.connected();
+}
+
+bool MqttManager::shouldRebootForRecovery() const {
+    return recoveryRebootRecommended_;
+}
+
+uint8_t MqttManager::consecutiveFailureCount() const {
+    return consecutiveFailureCount_;
 }
 
 bool MqttManager::requestConnect(String& error) {
@@ -258,10 +283,66 @@ bool MqttManager::requestConnect(String& error) {
 bool MqttManager::requestDisconnect(String& error) {
     error = "";
     connectionEnabled_ = false;
+    consecutiveFailureCount_ = 0;
+    recoveryRebootRecommended_ = false;
     lastConnectAttemptAt_ = millis();
     client_.disconnect(true);
     if (appState_ != nullptr) {
         appState_->setMqttConnected(false);
     }
     return true;
+}
+
+void MqttManager::registerFailedAttempt(AsyncMqttClientDisconnectReason reason) {
+    if (!connectionEnabled_ || settings_.mqtt.host.isEmpty() || client_.connected()) {
+        return;
+    }
+
+    if (wifiManager_ == nullptr || !wifiManager_->isConnected()) {
+        return;
+    }
+
+    if (consecutiveFailureCount_ < MQTT_MAX_CONSECUTIVE_FAILURES) {
+        ++consecutiveFailureCount_;
+    }
+
+    Serial.printf("[mqtt] connect failed reason=%d count=%u/%u\n", static_cast<int>(reason),
+                  static_cast<unsigned>(consecutiveFailureCount_),
+                  static_cast<unsigned>(MQTT_MAX_CONSECUTIVE_FAILURES));
+
+    if (isCredentialFailureReason(reason)) {
+        setFrontendError("MQTT broker rejected the configured client ID or credentials.");
+        recoveryRebootRecommended_ = false;
+        return;
+    }
+
+    if (consecutiveFailureCount_ >= MQTT_MAX_CONSECUTIVE_FAILURES) {
+        clearFrontendError();
+        recoveryRebootRecommended_ = true;
+        Serial.println("[mqtt] max consecutive failures reached, recovery reboot recommended");
+    }
+}
+
+bool MqttManager::isCredentialFailureReason(AsyncMqttClientDisconnectReason reason) const {
+    switch (reason) {
+        case AsyncMqttClientDisconnectReason::MQTT_UNACCEPTABLE_PROTOCOL_VERSION:
+        case AsyncMqttClientDisconnectReason::MQTT_IDENTIFIER_REJECTED:
+        case AsyncMqttClientDisconnectReason::MQTT_MALFORMED_CREDENTIALS:
+        case AsyncMqttClientDisconnectReason::MQTT_NOT_AUTHORIZED:
+            return true;
+        default:
+            return false;
+    }
+}
+
+void MqttManager::clearFrontendError() {
+    if (appState_ != nullptr) {
+        appState_->setLastError("");
+    }
+}
+
+void MqttManager::setFrontendError(const String& message) {
+    if (appState_ != nullptr) {
+        appState_->setLastError(message);
+    }
 }
