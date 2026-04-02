@@ -2,6 +2,10 @@ const state = {
   status: null,
   settings: null,
   recentPlayback: loadRecentPlayback(),
+  radioCountries: [],
+  radioStations: [],
+  radioCountriesLoading: false,
+  radioStationsLoading: false,
   wifiScanPollTimer: null,
   firmwareProgressPollTimer: null,
   firmwareReloadTimer: null,
@@ -25,6 +29,7 @@ const state = {
 
 const SETTINGS_AUTOSAVE_DELAY_MS = 900;
 const ACTIVE_TAB_STORAGE_KEY = "notifierActiveTab";
+const RADIO_SELECTION_STORAGE_KEY = "notifierRadioSelection";
 
 const elements = {
   deviceTitle: document.getElementById("deviceTitle"),
@@ -52,6 +57,10 @@ const elements = {
   volumeSlider: document.getElementById("volumeSlider"),
   volumeValue: document.getElementById("volumeValue"),
   audioMutedToggle: document.getElementById("audioMutedToggle"),
+  lowBatterySleepToggle: document.getElementById("lowBatterySleepToggle"),
+  lowBatterySleepThreshold: document.getElementById("lowBatterySleepThreshold"),
+  lowBatterySleepThresholdValue: document.getElementById("lowBatterySleepThresholdValue"),
+  lowBatteryWakeIntervalMinutes: document.getElementById("lowBatteryWakeIntervalMinutes"),
   audioMutedNote: document.getElementById("audioMutedNote"),
   otaStatus: document.getElementById("otaStatus"),
   otaStatusLabel: document.getElementById("otaStatusLabel"),
@@ -65,7 +74,13 @@ const elements = {
   localFirmwareLabel: document.getElementById("localFirmwareLabel"),
   message: document.getElementById("message"),
   playForm: document.getElementById("playForm"),
-  playSubmitButton: document.querySelector("#playForm button[type='submit']"),
+  playbackActionButton: document.getElementById("playbackActionButton"),
+  playUrl: document.getElementById("playUrl"),
+  playLabel: document.getElementById("playLabel"),
+  playType: document.getElementById("playType"),
+  radioCountrySelect: document.getElementById("radioCountrySelect"),
+  radioStationSelect: document.getElementById("radioStationSelect"),
+  radioBrowserStatus: document.getElementById("radioBrowserStatus"),
   settingsForm: document.getElementById("settingsForm"),
   recentPlaybackList: document.getElementById("recentPlaybackList"),
   useStaticIpToggle: document.getElementById("useStaticIpToggle"),
@@ -102,6 +117,30 @@ function saveRecentPlayback() {
   window.localStorage.setItem("notifierRecentPlayback", JSON.stringify(state.recentPlayback.slice(0, 6)));
 }
 
+function loadSavedRadioSelection() {
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(RADIO_SELECTION_STORAGE_KEY) || "{}");
+    return {
+      country: String(stored.country || "").trim(),
+      stationName: String(stored.stationName || "").trim(),
+      stationUrl: String(stored.stationUrl || "").trim(),
+    };
+  } catch {
+    return { country: "", stationName: "", stationUrl: "" };
+  }
+}
+
+function saveRadioSelection(selection) {
+  try {
+    window.localStorage.setItem(RADIO_SELECTION_STORAGE_KEY, JSON.stringify({
+      country: String(selection?.country || "").trim(),
+      stationName: String(selection?.stationName || "").trim(),
+      stationUrl: String(selection?.stationUrl || "").trim(),
+    }));
+  } catch {
+  }
+}
+
 function selectedFirmwareVersion() {
   const selected = document.querySelector('input[name="firmwareVersion"]:checked');
   return selected ? selected.value : "";
@@ -128,6 +167,227 @@ function showFirmwareListStatus(text, isError = false) {
   }
   elements.firmwareList.appendChild(note);
   updateFirmwareSelectionLabel();
+}
+
+function radioBrowserApiUrl(path) {
+  return `https://all.api.radio-browser.info/json${path}`;
+}
+
+function setRadioBrowserStatus(message, isError = false) {
+  if (!elements.radioBrowserStatus) {
+    return;
+  }
+  elements.radioBrowserStatus.textContent = message;
+  elements.radioBrowserStatus.style.color = isError ? "#b42318" : "";
+}
+
+function resetRadioStationSelect(placeholder = "Select a country first") {
+  if (!elements.radioStationSelect) {
+    return;
+  }
+  elements.radioStationSelect.innerHTML = "";
+  const option = document.createElement("option");
+  option.value = "";
+  option.textContent = placeholder;
+  elements.radioStationSelect.appendChild(option);
+  elements.radioStationSelect.value = "";
+  elements.radioStationSelect.disabled = true;
+}
+
+function renderRadioCountries(countries) {
+  if (!elements.radioCountrySelect) {
+    return;
+  }
+
+  const savedSelection = loadSavedRadioSelection();
+  const previousValue = elements.radioCountrySelect.value || savedSelection.country;
+  elements.radioCountrySelect.innerHTML = "";
+
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = countries.length ? "Select a country" : "No countries available";
+  elements.radioCountrySelect.appendChild(placeholder);
+
+  countries.forEach((country) => {
+    const option = document.createElement("option");
+    option.value = country.name;
+    option.textContent = `${country.name} (${country.stationCount})`;
+    elements.radioCountrySelect.appendChild(option);
+  });
+
+  if (countries.some((country) => country.name === previousValue)) {
+    elements.radioCountrySelect.value = previousValue;
+  }
+}
+
+function renderRadioStations(stations) {
+  if (!elements.radioStationSelect) {
+    return;
+  }
+
+  elements.radioStationSelect.innerHTML = "";
+
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = stations.length ? "Select a station" : "No stations found";
+  elements.radioStationSelect.appendChild(placeholder);
+
+  stations.forEach((station, index) => {
+    const option = document.createElement("option");
+    option.value = String(index);
+    option.textContent = station.name;
+    elements.radioStationSelect.appendChild(option);
+  });
+
+  elements.radioStationSelect.disabled = !stations.length;
+}
+
+async function loadRadioCountries(forceRefresh = false) {
+  if (state.radioCountriesLoading) {
+    return;
+  }
+  if (state.radioCountries.length && !forceRefresh) {
+    renderRadioCountries(state.radioCountries);
+    return;
+  }
+
+  state.radioCountriesLoading = true;
+  setRadioBrowserStatus("Loading countries...");
+
+  try {
+    const response = await fetch(radioBrowserApiUrl("/countries"), {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      throw new Error(`Radio Browser countries failed: ${response.status}`);
+    }
+
+    const payload = await response.json();
+    state.radioCountries = (Array.isArray(payload) ? payload : [])
+      .map((country) => ({
+        name: String(country.name || "").trim(),
+        stationCount: Number(country.stationcount || 0),
+      }))
+      .filter((country) => country.name)
+      .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
+
+    renderRadioCountries(state.radioCountries);
+    resetRadioStationSelect();
+    setRadioBrowserStatus(state.radioCountries.length ? "Choose a country to load stations." : "No countries available.");
+
+    const savedSelection = loadSavedRadioSelection();
+    if (savedSelection.country && state.radioCountries.some((country) => country.name === savedSelection.country)) {
+      elements.radioCountrySelect.value = savedSelection.country;
+      await loadRadioStations(savedSelection.country);
+    }
+  } catch (error) {
+    renderRadioCountries([]);
+    resetRadioStationSelect("Radio Browser unavailable");
+    setRadioBrowserStatus(error.message, true);
+  } finally {
+    state.radioCountriesLoading = false;
+  }
+}
+
+async function loadRadioStations(countryName) {
+  const trimmedCountry = String(countryName || "").trim();
+  state.radioStations = [];
+
+  if (!trimmedCountry) {
+    resetRadioStationSelect();
+    setRadioBrowserStatus(state.radioCountries.length ? "Choose a country to load stations." : "Loading countries...");
+    return;
+  }
+
+  state.radioStationsLoading = true;
+  resetRadioStationSelect("Loading stations...");
+  setRadioBrowserStatus(`Loading stations for ${trimmedCountry}...`);
+  saveRadioSelection({ country: trimmedCountry });
+
+  try {
+    const response = await fetch(
+      `${radioBrowserApiUrl(`/stations/bycountry/${encodeURIComponent(trimmedCountry)}`)}?hidebroken=true&order=name`,
+      {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      },
+    );
+    if (!response.ok) {
+      throw new Error(`Radio Browser stations failed: ${response.status}`);
+    }
+
+    const payload = await response.json();
+    state.radioStations = (Array.isArray(payload) ? payload : [])
+      .map((station) => ({
+        name: String(station.name || "").trim(),
+        url: String(station.url_resolved || station.url || "").trim(),
+        codec: String(station.codec || "").trim(),
+        bitrate: Number(station.bitrate || 0),
+      }))
+      .filter((station) => station.name && station.url)
+      .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
+
+    renderRadioStations(state.radioStations);
+
+    const savedSelection = loadSavedRadioSelection();
+    const savedIndex = state.radioStations.findIndex((station) => (
+      (savedSelection.stationUrl && station.url === savedSelection.stationUrl) ||
+      (savedSelection.stationName && station.name === savedSelection.stationName)
+    ));
+    if (savedIndex >= 0 && elements.radioStationSelect) {
+      elements.radioStationSelect.value = String(savedIndex);
+      applySelectedRadioStation();
+    }
+
+    setRadioBrowserStatus(
+      state.radioStations.length
+        ? `Loaded ${state.radioStations.length} station(s) for ${trimmedCountry}.`
+        : `No stations found for ${trimmedCountry}.`,
+    );
+  } catch (error) {
+    resetRadioStationSelect("Station list unavailable");
+    setRadioBrowserStatus(error.message, true);
+  } finally {
+    state.radioStationsLoading = false;
+  }
+}
+
+function applySelectedRadioStation() {
+  const selectedIndex = Number(elements.radioStationSelect?.value ?? -1);
+  if (!Number.isInteger(selectedIndex) || selectedIndex < 0 || selectedIndex >= state.radioStations.length) {
+    return;
+  }
+
+  const station = state.radioStations[selectedIndex];
+  if (!station) {
+    return;
+  }
+
+  if (elements.playUrl) {
+    elements.playUrl.value = station.url;
+  }
+  if (elements.playLabel) {
+    elements.playLabel.value = station.name;
+  }
+  if (elements.playType) {
+    elements.playType.value = "stream";
+  }
+
+  saveRadioSelection({
+    country: elements.radioCountrySelect?.value || "",
+    stationName: station.name,
+    stationUrl: station.url,
+  });
+
+  const meta = [];
+  if (station.codec) {
+    meta.push(station.codec.toUpperCase());
+  }
+  if (station.bitrate > 0) {
+    meta.push(`${station.bitrate} kbps`);
+  }
+  setRadioBrowserStatus(meta.length ? `${station.name} selected (${meta.join(" | ")}).` : `${station.name} selected.`);
 }
 
 function renderFirmwareList(releases, currentVersion, latestVersion, selectedVersion) {
@@ -482,6 +742,7 @@ function fillForm(data) {
   }
   updateDerivedBatteryCalibration();
   updateAudioUiState();
+  updateLowBatterySleepUi();
   updateConditionalVisibility();
   renderOledPreview();
   state.settingsDirty = false;
@@ -499,6 +760,20 @@ function updateAudioUiState() {
     elements.audioMutedNote.textContent = muted
       ? "Audio is muted by default in this build. Sound effects stay suppressed while muted."
       : "Audio mute is off and playback is enabled.";
+  }
+}
+
+function updateLowBatterySleepUi() {
+  const enabled = Boolean(elements.lowBatterySleepToggle?.checked);
+  const threshold = Number(elements.lowBatterySleepThreshold?.value || state.settings?.device?.lowBatterySleepThresholdPercent || 20);
+  if (elements.lowBatterySleepThresholdValue) {
+    elements.lowBatterySleepThresholdValue.textContent = `${threshold}%`;
+  }
+  if (elements.lowBatterySleepThreshold) {
+    elements.lowBatterySleepThreshold.disabled = !enabled;
+  }
+  if (elements.lowBatteryWakeIntervalMinutes) {
+    elements.lowBatteryWakeIntervalMinutes.disabled = !enabled;
   }
 }
 
@@ -544,6 +819,8 @@ function collectForm() {
   payload.mqtt.port = Number(payload.mqtt.port || 1883);
   payload.device.savedVolumePercent = Number(elements.volumeSlider?.value || payload.device.savedVolumePercent || 5);
   payload.device.audioMuted = Boolean(elements.audioMutedToggle?.checked ?? payload.device.audioMuted ?? true);
+  payload.device.lowBatterySleepThresholdPercent = Number(payload.device.lowBatterySleepThresholdPercent || 20);
+  payload.device.lowBatteryWakeIntervalMinutes = Number(payload.device.lowBatteryWakeIntervalMinutes || 0);
   payload.battery.calibrationMultiplier = currentBatteryCalibrationMultiplier();
   payload.battery.updateIntervalMs = Number(payload.battery.updateIntervalMs || 10000);
   payload.battery.movingAverageWindowSize = Number(payload.battery.movingAverageWindowSize || 10);
@@ -644,6 +921,98 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
+function estimateBatteryPercent(voltage) {
+  const numericVoltage = Number(voltage || 0);
+  if (!Number.isFinite(numericVoltage) || numericVoltage <= 0) {
+    return 0;
+  }
+  const percent = Math.round(((numericVoltage - 3.2) / (4.2 - 3.2)) * 100);
+  return Math.max(0, Math.min(100, percent));
+}
+
+function batteryLevelClass(percent) {
+  if (percent >= 75) {
+    return "high";
+  }
+  if (percent >= 45) {
+    return "mid";
+  }
+  if (percent >= 20) {
+    return "low";
+  }
+  return "critical";
+}
+
+function wifiSignalState(rssi, connected) {
+  if (!connected) {
+    return { level: 0, label: "Offline", tone: "weak" };
+  }
+
+  const numericRssi = Number(rssi || 0);
+  if (numericRssi >= -55) {
+    return { level: 4, label: "Excellent", tone: "excellent" };
+  }
+  if (numericRssi >= -67) {
+    return { level: 3, label: "Good", tone: "good" };
+  }
+  if (numericRssi >= -75) {
+    return { level: 2, label: "Fair", tone: "fair" };
+  }
+  return { level: 1, label: "Weak", tone: "weak" };
+}
+
+function renderBatteryHero(voltage) {
+  if (!elements.batteryHero) {
+    return;
+  }
+
+  const numericVoltage = Number(voltage || 0);
+  const percent = estimateBatteryPercent(numericVoltage);
+  const levelClass = batteryLevelClass(percent);
+  const fillWidth = Math.max(8, percent);
+
+  elements.batteryHero.className = "stat-value stat-value-battery";
+  elements.batteryHero.innerHTML = `
+    <div class="battery-hero-widget battery-${levelClass}" aria-label="Battery ${percent}%">
+      <div class="battery-shell">
+        <div class="battery-terminal"></div>
+        <div class="battery-fill" style="width: ${fillWidth}%;"></div>
+        <div class="battery-percent">${percent}%</div>
+      </div>
+      <div class="battery-meta">${numericVoltage.toFixed(2)} V</div>
+    </div>
+  `;
+}
+
+function renderWifiHero(connected, ipAddress, rssi) {
+  if (!elements.wifiPill) {
+    return;
+  }
+
+  const signal = wifiSignalState(rssi, connected);
+  const bars = Array.from({ length: 4 }, (_, index) => {
+    const active = index < signal.level;
+    return `<span class="wifi-bar ${active ? `active ${signal.tone}` : ""}"></span>`;
+  }).join("");
+
+  elements.wifiPill.className = "stat-value stat-value-wifi";
+  elements.wifiPill.innerHTML = connected
+    ? `
+      <div class="wifi-hero-widget wifi-${signal.tone}">
+        <div class="wifi-icon" aria-hidden="true">${bars}</div>
+        <div class="wifi-quality">${signal.label}</div>
+        <div class="hero-meta hero-meta-compact">${escapeHtml(ipAddress || "No IP")} • ${Number(rssi || 0)} dBm</div>
+      </div>
+    `
+    : `
+      <div class="wifi-hero-widget wifi-weak">
+        <div class="wifi-icon" aria-hidden="true">${bars}</div>
+        <div class="wifi-quality">AP Mode</div>
+        <div class="hero-meta hero-meta-compact">${escapeHtml(ipAddress || "No IP")}</div>
+      </div>
+    `;
+}
+
 function renderStatus(status) {
   state.status = status;
   const ota = status.otaManager || status.ota || {};
@@ -663,7 +1032,6 @@ function renderStatus(status) {
   elements.firmwareVersionCard.textContent = status.firmware.version;
   elements.batteryVoltage.textContent = `${Number(status.battery.voltage || 0).toFixed(3)} V`;
   elements.batteryRaw.textContent = `${status.battery.rawAdc ?? "-"} / ${Number(status.battery.rawAdcVoltage || 0).toFixed(3)} V`;
-  elements.batteryHero.textContent = `${Number(status.battery.voltage || 0).toFixed(2)} V`;
   updateDerivedBatteryCalibration();
   elements.freeHeap.textContent = `${status.system.freeHeap} B`;
   elements.settingsSource.textContent = status.settings.usingSaved ? "Saved settings" : "Hardwired defaults";
@@ -677,18 +1045,13 @@ function renderStatus(status) {
   const audioMuted = Boolean(elements.audioMutedToggle?.checked);
   const audioEnabled = Boolean(status.firmware?.audioEnabled);
 
-  if (elements.playSubmitButton) {
-    elements.playSubmitButton.disabled = !audioEnabled;
-    elements.playSubmitButton.title = audioEnabled ? "" : "Audio playback is disabled in this firmware build";
-  }
+  updatePlaybackActionButton();
   updateAudioUiState();
 
-  elements.wifiPill.className = `stat-value multiline ${wifiConnected ? "ok" : "warn"}`;
-  elements.wifiPill.innerHTML = wifiConnected
-    ? `WiFi Linked<span class="stat-subvalue">${escapeHtml(status.network.ip || "No IP")}</span>`
-    : `AP Mode<span class="stat-subvalue">${escapeHtml(status.network.apMode ? "192.168.4.1" : "No IP")}</span>`;
+  renderWifiHero(wifiConnected, status.network.ip || (status.network.apMode ? "192.168.4.1" : "No IP"), status.network.wifiRssi);
   setPill(elements.mqttPill, mqttConnected ? "MQTT Connected" : "MQTT Offline", mqttConnected ? "ok" : "warn");
   setPill(elements.audioPill, audioMuted ? "Muted" : (status.playback.state || "idle"), playbackActive && !audioMuted ? "ok" : "warn");
+  renderBatteryHero(status.battery.voltage || 0);
 
   elements.otaStatusLabel.textContent = ota.message || ota.lastResult || "Idle";
   elements.latestVersion.textContent = ota.latestVersion || status.ota.latestVersion || "-";
@@ -766,6 +1129,21 @@ function updateMqttActionButton() {
   const mqttConnected = Boolean(state.status?.network?.mqttConnected);
   elements.mqttConnectButton.textContent = mqttConnected ? "Disconnect MQTT" : "Connect MQTT";
   elements.mqttConnectButton.classList.toggle("secondary", !mqttConnected);
+}
+
+function updatePlaybackActionButton() {
+  if (!elements.playbackActionButton) {
+    return;
+  }
+
+  const playbackState = String(state.status?.playback?.state || "idle");
+  const playbackActive = playbackState === "playing" || playbackState === "buffering";
+  const audioEnabled = Boolean(state.status?.firmware?.audioEnabled);
+
+  elements.playbackActionButton.textContent = playbackActive ? "Stop" : "Play";
+  elements.playbackActionButton.classList.toggle("secondary", playbackActive);
+  elements.playbackActionButton.disabled = !audioEnabled;
+  elements.playbackActionButton.title = audioEnabled ? "" : "Audio playback is disabled in this firmware build";
 }
 
 function setupTabs() {
@@ -1127,11 +1505,13 @@ async function saveSettings(options = {}) {
 }
 
 async function submitPlay(event) {
-  event.preventDefault();
+  if (event) {
+    event.preventDefault();
+  }
   const payload = {
-    url: document.getElementById("playUrl").value,
-    label: document.getElementById("playLabel").value,
-    type: document.getElementById("playType").value,
+    url: elements.playUrl.value,
+    label: elements.playLabel.value,
+    type: elements.playType.value,
   };
   await request("/api/play", { method: "POST", body: JSON.stringify(payload) });
   state.recentPlayback.unshift(payload);
@@ -1166,6 +1546,26 @@ async function stopPlayback() {
   setMessage("Stop queued");
   toast("Stop queued");
   await loadStatus();
+}
+
+async function handlePlaybackAction(event) {
+  if (event) {
+    event.preventDefault();
+  }
+
+  const playbackState = String(state.status?.playback?.state || "idle");
+  const playbackActive = playbackState === "playing" || playbackState === "buffering";
+
+  if (playbackActive) {
+    await stopPlayback();
+    return;
+  }
+
+  if (!elements.playForm.reportValidity()) {
+    return;
+  }
+
+  await submitPlay();
 }
 
 async function checkOta() {
@@ -1290,7 +1690,7 @@ elements.scanWifiButton.addEventListener("click", () => {
   const shouldConnect = state.wifiSelectionPending;
   return (shouldConnect ? connectWifi() : scanWifiNetworks()).catch(handleError);
 });
-document.getElementById("stopButton").addEventListener("click", () => stopPlayback().catch(handleError));
+elements.playbackActionButton?.addEventListener("click", () => handlePlaybackAction().catch(handleError));
 document.getElementById("copyUrlButton").addEventListener("click", () => copyCurrentUrl().catch(handleError));
 document.getElementById("checkOtaButton").addEventListener("click", () => checkOta().catch(handleError));
 document.getElementById("applyOtaButton").addEventListener("click", () => installSelectedFirmware().catch(handleError));
@@ -1314,7 +1714,13 @@ elements.localFirmwareFile?.addEventListener("change", () => {
   }
 });
 
-elements.playForm.addEventListener("submit", (event) => submitPlay(event).catch(handleError));
+elements.playForm.addEventListener("submit", (event) => handlePlaybackAction(event).catch(handleError));
+elements.radioCountrySelect?.addEventListener("change", (event) => {
+  loadRadioStations(event.target.value).catch(handleError);
+});
+elements.radioStationSelect?.addEventListener("change", () => {
+  applySelectedRadioStation();
+});
 elements.wifiNetworkList.addEventListener("change", (event) => {
   if (!event.target.value) {
     state.wifiSelectionPending = false;
@@ -1337,6 +1743,13 @@ elements.audioMutedToggle?.addEventListener("change", () => {
   updateAudioUiState();
   queueSettingsSave(150);
 });
+elements.lowBatterySleepToggle?.addEventListener("change", () => {
+  updateLowBatterySleepUi();
+  queueSettingsSave(150);
+});
+elements.lowBatterySleepThreshold?.addEventListener("input", () => {
+  updateLowBatterySleepUi();
+});
 elements.batteryMeasuredVoltage?.addEventListener("input", (event) => {
   normalizeDecimalField(event.target);
   updateDerivedBatteryCalibration();
@@ -1356,11 +1769,18 @@ for (const field of elements.settingsForm.elements) {
     continue;
   }
 
+  if (field.name === "device.savedVolumePercent") {
+    continue;
+  }
+
   if (field.type === "checkbox" || field.tagName === "SELECT") {
     field.addEventListener("change", () => {
       queueSettingsSave(150);
       if (field.name === "wifi.ssid" || field.name === "wifi.password") {
         updateWifiActionButton();
+      }
+      if (field.name?.startsWith("device.lowBattery")) {
+        updateLowBatterySleepUi();
       }
       if (field.name?.startsWith("oled.")) {
         renderOledPreview();
@@ -1391,6 +1811,9 @@ for (const field of elements.settingsForm.elements) {
         setScanStatus("");
       }
     }
+    if (event.target.name?.startsWith("device.lowBattery")) {
+      updateLowBatterySleepUi();
+    }
     if (event.target.name?.startsWith("oled.")) {
       renderOledPreview();
     }
@@ -1419,6 +1842,7 @@ setupPasswordToggles();
 renderRecentPlayback();
 updateWifiActionButton();
 renderOledPreview();
+loadRadioCountries().catch(handleError);
 
 Promise.all([loadStatus(), loadSettings()]).catch(handleError);
 

@@ -42,15 +42,16 @@ The repository builds successfully with PlatformIO and emits [firmware.bin](.pio
 
 Current firmware version in this repository:
 
-- `v0.1.3`
+- `v0.1.5`
 
 Recent firmware and web UI updates included in this version:
 
-- firmware tab now auto-checks releases when opened and shows a selectable GitHub release list, including downgrade targets
-- OTA installs now show progress on both the web UI and the physical OLED during app-handled update flows
-- the MQTT tab now exposes an explicit connect or disconnect action instead of only saving settings
-- Wi-Fi scan flow now keeps the correct button state and avoids the earlier false scan-failed result after successful scans
-- Home Assistant battery-voltage discovery now suggests two decimal places for display
+- audio I2S output is enabled again in the main build, with larger OTA slots and tuned stream buffering for more reliable playback
+- the Audio tab now includes Radio Browser country and station pickers, remembers the browser selection, and uses a single Play or Stop button
+- the dashboard now shows a battery icon with estimated percentage and a Wi-Fi signal indicator with RSSI quality
+- low-battery deep sleep can now be configured from the Device tab, including threshold and wake interval persistence
+- Wi-Fi station connect now prefers the strongest matching BSSID when several mesh nodes share the same SSID
+- volume changes now update playback immediately while deferring NVS persistence to avoid interrupting active streams
 
 The Home Assistant integration supports the direct MQTT URL-command path and includes Home Assistant example configuration for wrapping the notifier as a player entity from HA:
 
@@ -401,9 +402,9 @@ Recommended manifest shape:
 
 ```json
 {
-  "version": "v0.1.3",
-  "url": "https://github.com/elik745i/ESP32-Notifier-for-Homeassistant/releases/download/v0.1.3/esp32-notifier-v0.1.3.bin",
-  "asset": "esp32-notifier-v0.1.3.bin",
+  "version": "v0.1.5",
+  "url": "https://github.com/elik745i/ESP32-Notifier-for-Homeassistant/releases/download/v0.1.5/esp32-notifier-v0.1.5.bin",
+  "asset": "esp32-notifier-v0.1.5.bin",
   "sha256": "<optional sha256>",
   "channel": "stable"
 }
@@ -498,7 +499,7 @@ After reset:
 - Home Assistant no longer exposes a native MQTT `media_player` integration, so a Home Assistant-side wrapper entity is required if you want this notifier to appear in the media-player list.
 - The notifier is still most robust when driven by direct URL playback over MQTT.
 - Audio playback support is centered on the selected audio library's stream capabilities; some edge-case codecs and playlists may still need tuning.
-- The current published GitHub release was built from the diagnostic configuration with `APP_DISABLE_AUDIO=1`, so that release will not produce sound until an audio-enabled build is published.
+- Firmware size is now very close to the OTA slot limit, so future feature additions will likely require code trimming or a different partition strategy.
 - OTA installs are functional but still conservative: the preferred secure path is a manifest with SHA256.
 - Web auth is basic HTTP auth, not a complete role-based access model.
 - The current firmware focuses on output-only audio. No microphone or duplex audio path is implemented.

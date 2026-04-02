@@ -33,6 +33,11 @@ constexpr uint16_t BATTERY_MOVING_AVERAGE_WINDOW = 10;
 
 constexpr uint8_t DEFAULT_VOLUME_PERCENT = 5;
 constexpr bool DEFAULT_AUDIO_MUTED = true;
+constexpr int AUDIO_BUFFER_SIZE_RAM = 24 * 1024;
+constexpr int AUDIO_BUFFER_SIZE_PSRAM = 160 * 1024;
+constexpr bool LOW_BATTERY_SLEEP_ENABLED = false;
+constexpr uint8_t LOW_BATTERY_SLEEP_THRESHOLD_PERCENT = 20;
+constexpr uint16_t LOW_BATTERY_WAKE_INTERVAL_MINUTES = 15;
 
 constexpr bool WEB_AUTH_ENABLED = false;
 constexpr char WEB_USERNAME[] = "admin";

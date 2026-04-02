@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <esp_sleep.h>
 #include <esp_system.h>
 
 #ifdef SAFE_BOOT_DIAGNOSTIC
@@ -155,7 +156,9 @@ struct DeferredActions {
     bool playPending = false;
     bool stopPending = false;
     bool volumePending = false;
+    bool volumeSavePending = false;
     uint8_t pendingVolume = 0;
+    unsigned long volumeSaveAt = 0;
     String playUrl;
     String playLabel;
     String playType;
@@ -169,10 +172,17 @@ bool factoryResetRequested = false;
 unsigned long rebootAt = 0;
 unsigned long lastHeapUpdateAt = 0;
 bool recoveryRebootScheduled = false;
+bool wokeFromDeepSleep = false;
+unsigned long lowBatteryWakeStartedAt = 0;
 bool previousWifiConnected = false;
 bool previousMqttConnected = false;
 String previousPlaybackState = "idle";
 bool transitionStateInitialized = false;
+
+constexpr float kBatteryPercentEmptyVoltage = 3.2f;
+constexpr float kBatteryPercentFullVoltage = 4.2f;
+constexpr unsigned long kLowBatteryWakeWindowMs = 30000UL;
+constexpr unsigned long kVolumePersistDelayMs = 750UL;
 
 bool isBatterySamplingAllowed() {
     if (audioPlayer == nullptr) {
@@ -220,6 +230,79 @@ void logBootStage(const char* stage) {
 void scheduleReboot(uint32_t delayMs) {
     rebootRequested = true;
     rebootAt = millis() + delayMs;
+}
+
+uint8_t estimateBatteryPercent(float voltage) {
+    const float normalized = (voltage - kBatteryPercentEmptyVoltage) / (kBatteryPercentFullVoltage - kBatteryPercentEmptyVoltage);
+    const float clamped = normalized < 0.0f ? 0.0f : (normalized > 1.0f ? 1.0f : normalized);
+    return static_cast<uint8_t>((clamped * 100.0f) + 0.5f);
+}
+
+void enterLowBatteryDeepSleep(uint8_t batteryPercent, float voltage, const char* reason) {
+    if (settings == nullptr) {
+        return;
+    }
+
+    const uint16_t wakeIntervalMinutes = settings->device.lowBatteryWakeIntervalMinutes;
+    Serial.printf("[power] entering deep sleep reason=%s battery=%u%% voltage=%.3f wake_interval_min=%u\n",
+                  reason,
+                  static_cast<unsigned>(batteryPercent),
+                  voltage,
+                  static_cast<unsigned>(wakeIntervalMinutes));
+    Serial.flush();
+
+    if (audioPlayer != nullptr) {
+        audioPlayer->stop();
+    }
+    if (displayManager != nullptr) {
+        displayManager->powerOff();
+    }
+
+    delay(100);
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+    if (wakeIntervalMinutes > 0) {
+        const uint64_t wakeIntervalUs = static_cast<uint64_t>(wakeIntervalMinutes) * 60ULL * 1000000ULL;
+        esp_sleep_enable_timer_wakeup(wakeIntervalUs);
+    }
+
+    WiFi.disconnect(true, true);
+    WiFi.mode(WIFI_OFF);
+    delay(100);
+    esp_deep_sleep_start();
+}
+
+void handleLowBatterySleepPolicy(const AppStateSnapshot& snapshot) {
+    if (settings == nullptr || snapshot.ota.busy || !settings->device.lowBatterySleepEnabled) {
+        if (settings == nullptr || !settings->device.lowBatterySleepEnabled) {
+            wokeFromDeepSleep = false;
+            lowBatteryWakeStartedAt = 0;
+        }
+        return;
+    }
+
+    const uint8_t batteryPercent = estimateBatteryPercent(snapshot.battery.voltage);
+    const uint8_t thresholdPercent = settings->device.lowBatterySleepThresholdPercent;
+    if (batteryPercent > thresholdPercent) {
+        wokeFromDeepSleep = false;
+        lowBatteryWakeStartedAt = 0;
+        return;
+    }
+
+    if (wokeFromDeepSleep) {
+        if (lowBatteryWakeStartedAt == 0) {
+            lowBatteryWakeStartedAt = millis();
+            Serial.printf("[power] low-battery wake window started battery=%u%% threshold=%u%%\n",
+                          static_cast<unsigned>(batteryPercent),
+                          static_cast<unsigned>(thresholdPercent));
+        }
+        if (millis() - lowBatteryWakeStartedAt < kLowBatteryWakeWindowMs) {
+            return;
+        }
+        enterLowBatteryDeepSleep(batteryPercent, snapshot.battery.voltage, "wake window elapsed while battery still low");
+        return;
+    }
+
+    enterLowBatteryDeepSleep(batteryPercent, snapshot.battery.voltage, "battery threshold reached");
 }
 
 void pumpOtaDisplayProgress() {
@@ -318,7 +401,10 @@ void handleMqttCommand(const PlaybackCommand& command) {
         settings->device.savedVolumePercent = command.volumePercent;
         audioPlayer->setVolumePercent(command.volumePercent);
         soundEffects->setVolumePercent(command.volumePercent);
-        settingsManager->save(*settings);
+        deferredActions->pendingVolume = command.volumePercent;
+        deferredActions->volumePending = false;
+        deferredActions->volumeSavePending = true;
+        deferredActions->volumeSaveAt = millis() + kVolumePersistDelayMs;
     } else {
         String ignored;
         playRequest(command.url, command.label, command.mediaType.isEmpty() ? command.action : command.mediaType, ignored);
@@ -349,9 +435,15 @@ void processDeferredActions() {
         settings->device.savedVolumePercent = deferredActions->pendingVolume;
         audioPlayer->setVolumePercent(deferredActions->pendingVolume);
         soundEffects->setVolumePercent(deferredActions->pendingVolume);
-        settingsManager->save(*settings);
         deferredActions->volumePending = false;
+        deferredActions->volumeSavePending = true;
+        deferredActions->volumeSaveAt = millis() + kVolumePersistDelayMs;
         mqttManager->publishState();
+    }
+
+    if (deferredActions->volumeSavePending && static_cast<long>(millis() - deferredActions->volumeSaveAt) >= 0) {
+        settingsManager->save(*settings);
+        deferredActions->volumeSavePending = false;
     }
 
     if (deferredActions->playPending) {
@@ -371,8 +463,10 @@ void setup() {
     Serial.begin(115200);
     delay(200);
 
+    const esp_reset_reason_t resetReason = esp_reset_reason();
+    wokeFromDeepSleep = resetReason == ESP_RST_DEEPSLEEP;
     Serial.printf("\n[boot] app=%s version=%s built=%s\n", APP_NAME, APP_VERSION, APP_BUILD_DATE);
-    Serial.printf("[boot] reset reason=%s (%d)\n", resetReasonToString(esp_reset_reason()), static_cast<int>(esp_reset_reason()));
+    Serial.printf("[boot] reset reason=%s (%d)\n", resetReasonToString(resetReason), static_cast<int>(resetReason));
     Serial.flush();
 
     logBootStage("construct runtime objects");
@@ -505,6 +599,7 @@ void loop() {
     const AppStateSnapshot snapshot = appState->snapshot();
     processSoundEffectTransitions(snapshot);
     displayManager->loop(snapshot);
+    handleLowBatterySleepPolicy(snapshot);
 
     if (millis() - lastHeapUpdateAt > 5000UL) {
         lastHeapUpdateAt = millis();

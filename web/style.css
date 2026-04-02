@@ -119,6 +119,160 @@
     color: var(--danger);
   }
 
+  .stat-value-wifi,
+  .stat-value-battery {
+    margin-top: 8px;
+  }
+
+  .wifi-hero-widget,
+  .battery-hero-widget {
+    display: grid;
+    justify-items: center;
+    gap: 4px;
+  }
+
+  .wifi-icon {
+    display: flex;
+    align-items: end;
+    justify-content: center;
+    gap: 5px;
+    height: 46px;
+  }
+
+  .wifi-bar {
+    width: 10px;
+    border-radius: 999px 999px 2px 2px;
+    background: #d5d9e2;
+    opacity: 0.9;
+  }
+
+  .wifi-bar:nth-child(1) {
+    height: 14px;
+  }
+
+  .wifi-bar:nth-child(2) {
+    height: 24px;
+  }
+
+  .wifi-bar:nth-child(3) {
+    height: 36px;
+  }
+
+  .wifi-bar:nth-child(4) {
+    height: 48px;
+  }
+
+  .wifi-bar.active.excellent {
+    background: #58be45;
+  }
+
+  .wifi-bar.active.good {
+    background: #1e4aa8;
+  }
+
+  .wifi-bar.active.fair {
+    background: #e8c943;
+  }
+
+  .wifi-bar.active.weak {
+    background: #d62f2f;
+  }
+
+  .wifi-quality {
+    font-size: clamp(1rem, 2vw, 1.35rem);
+    font-weight: 700;
+  }
+
+  .hero-meta {
+    color: var(--ink);
+    font-weight: 600;
+  }
+
+  .hero-meta-compact {
+    font-size: clamp(0.72rem, 1.4vw, 0.92rem);
+    line-height: 1.15;
+    max-width: 100%;
+  }
+
+  .wifi-excellent .wifi-quality {
+    color: #58be45;
+  }
+
+  .wifi-good .wifi-quality {
+    color: #1e4aa8;
+  }
+
+  .wifi-fair .wifi-quality {
+    color: #b59612;
+  }
+
+  .wifi-weak .wifi-quality {
+    color: #d62f2f;
+  }
+
+  .battery-shell {
+    position: relative;
+    width: 106px;
+    height: 52px;
+    border: 5px solid #2f6adf;
+    border-radius: 8px;
+    background: #ffffff;
+    overflow: visible;
+  }
+
+  .battery-terminal {
+    position: absolute;
+    top: 12px;
+    right: -13px;
+    width: 11px;
+    height: 22px;
+    border-radius: 0 4px 4px 0;
+    background: #2f6adf;
+  }
+
+  .battery-fill {
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    bottom: 6px;
+    border-radius: 3px;
+    background: #2f6adf;
+    transition: width 180ms ease, background-color 180ms ease;
+  }
+
+  .battery-percent {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: #14213d;
+    z-index: 1;
+  }
+
+  .battery-meta {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--ink);
+  }
+
+  .battery-high .battery-fill {
+    background: #2f6adf;
+  }
+
+  .battery-mid .battery-fill {
+    background: #36a36e;
+  }
+
+  .battery-low .battery-fill {
+    background: #e5b93c;
+  }
+
+  .battery-critical .battery-fill {
+    background: #d94a44;
+  }
+
   .grid {
     margin-top: 12px;
     display: grid;
@@ -319,6 +473,27 @@
     color: var(--muted);
     font-size: 0.86rem;
     font-weight: 600;
+  }
+
+  .radio-browser-card {
+    display: grid;
+    gap: 10px;
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel-soft);
+  }
+
+  .radio-browser-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .radio-browser-row {
+    align-items: end;
   }
 
   .oled-preview-card {

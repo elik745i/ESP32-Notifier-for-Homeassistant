@@ -85,9 +85,10 @@ void AudioPlayer::begin(uint8_t bclkPin, uint8_t wsPin, uint8_t doutPin, uint8_t
     }
     impl_->appState = &appState;
     g_impl = impl_;
+    impl_->audio.setBufsize(DefaultConfig::AUDIO_BUFFER_SIZE_RAM, DefaultConfig::AUDIO_BUFFER_SIZE_PSRAM);
     impl_->audio.setPinout(bclkPin, wsPin, doutPin);
     impl_->audio.forceMono(false);
-    impl_->audio.setConnectionTimeout(3000, 3000);
+    impl_->audio.setConnectionTimeout(5000, 5000);
     setVolumePercent(initialVolumePercent);
     impl_->publish();
 }

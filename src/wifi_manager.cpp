@@ -93,7 +93,21 @@ void WiFiManager::startStation() {
         WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);
     }
 
-    WiFi.begin(settings_.wifi.ssid.c_str(), settings_.wifi.password.c_str());
+    const PreferredAccessPoint preferredAccessPoint = findPreferredAccessPoint();
+    if (preferredAccessPoint.found && preferredAccessPoint.channel > 0) {
+        WiFi.begin(settings_.wifi.ssid.c_str(), settings_.wifi.password.c_str(), preferredAccessPoint.channel,
+                   preferredAccessPoint.bssid, true);
+        Serial.printf("[wifi] selected strongest BSSID for ssid='%s' rssi=%ld channel=%ld bssid=%02X:%02X:%02X:%02X:%02X:%02X\n",
+                      settings_.wifi.ssid.c_str(),
+                      static_cast<long>(preferredAccessPoint.rssi),
+                      static_cast<long>(preferredAccessPoint.channel),
+                      preferredAccessPoint.bssid[0], preferredAccessPoint.bssid[1], preferredAccessPoint.bssid[2],
+                      preferredAccessPoint.bssid[3], preferredAccessPoint.bssid[4], preferredAccessPoint.bssid[5]);
+    } else {
+        WiFi.begin(settings_.wifi.ssid.c_str(), settings_.wifi.password.c_str());
+        Serial.printf("[wifi] no matching BSSID scan result for ssid='%s', using default station connect\n",
+                      settings_.wifi.ssid.c_str());
+    }
     stationAttemptActive_ = true;
     connectAttemptStartedAt_ = millis();
     lastConnectAttemptAt_ = connectAttemptStartedAt_;
@@ -254,6 +268,45 @@ bool WiFiManager::isConfiguredNetworkVisible() {
 
     WiFi.scanDelete();
     return visible;
+}
+
+WiFiManager::PreferredAccessPoint WiFiManager::findPreferredAccessPoint() {
+    PreferredAccessPoint preferred;
+    if (!hasStaCredentials()) {
+        return preferred;
+    }
+
+    const int existingScanState = WiFi.scanComplete();
+    if (existingScanState == WIFI_SCAN_RUNNING) {
+        WiFi.scanDelete();
+    }
+
+    WiFi.enableSTA(true);
+    const int networkCount = WiFi.scanNetworks(false, true);
+    if (networkCount <= 0) {
+        WiFi.scanDelete();
+        return preferred;
+    }
+
+    for (int index = 0; index < networkCount; ++index) {
+        if (WiFi.SSID(index) != settings_.wifi.ssid) {
+            continue;
+        }
+
+        const int32_t candidateRssi = WiFi.RSSI(index);
+        if (!preferred.found || candidateRssi > preferred.rssi) {
+            preferred.found = true;
+            preferred.rssi = candidateRssi;
+            preferred.channel = WiFi.channel(index);
+            const uint8_t* candidateBssid = WiFi.BSSID(index);
+            if (candidateBssid != nullptr) {
+                memcpy(preferred.bssid, candidateBssid, sizeof(preferred.bssid));
+            }
+        }
+    }
+
+    WiFi.scanDelete();
+    return preferred;
 }
 
 bool WiFiManager::isCredentialFailureReason(wifi_err_reason_t reason) const {

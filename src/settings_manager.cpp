@@ -71,6 +71,9 @@ SettingsBundle SettingsManager::defaults() const {
     settings.device.friendlyName = DefaultConfig::FRIENDLY_NAME;
     settings.device.savedVolumePercent = DefaultConfig::DEFAULT_VOLUME_PERCENT;
     settings.device.audioMuted = DefaultConfig::DEFAULT_AUDIO_MUTED;
+    settings.device.lowBatterySleepEnabled = DefaultConfig::LOW_BATTERY_SLEEP_ENABLED;
+    settings.device.lowBatterySleepThresholdPercent = DefaultConfig::LOW_BATTERY_SLEEP_THRESHOLD_PERCENT;
+    settings.device.lowBatteryWakeIntervalMinutes = DefaultConfig::LOW_BATTERY_WAKE_INTERVAL_MINUTES;
     settings.usingSavedSettings = false;
     return settings;
 }
@@ -113,6 +116,8 @@ SettingsBundle SettingsManager::sanitize(const SettingsBundle& input) const {
     if (settings.device.savedVolumePercent > 100) {
         settings.device.savedVolumePercent = 100;
     }
+    settings.device.lowBatterySleepThresholdPercent = clampValue<uint8_t>(settings.device.lowBatterySleepThresholdPercent, static_cast<uint8_t>(1), static_cast<uint8_t>(100));
+    settings.device.lowBatteryWakeIntervalMinutes = clampValue<uint16_t>(settings.device.lowBatteryWakeIntervalMinutes, static_cast<uint16_t>(0), static_cast<uint16_t>(1440));
     settings.battery.calibrationMultiplier = clampValue<float>(settings.battery.calibrationMultiplier, 0.1f, 10.0f);
     settings.battery.updateIntervalMs = settings.battery.updateIntervalMs < 250 ? 250 : settings.battery.updateIntervalMs;
     settings.battery.movingAverageWindowSize = clampValue<uint16_t>(settings.battery.movingAverageWindowSize, static_cast<uint16_t>(1), static_cast<uint16_t>(32));
@@ -190,6 +195,9 @@ SettingsBundle SettingsManager::load() {
     settings.device.friendlyName = readString("dev_friendly", settings.device.friendlyName);
     settings.device.savedVolumePercent = readUInt("dev_vol", settings.device.savedVolumePercent);
     settings.device.audioMuted = readBool("dev_muted", settings.device.audioMuted);
+    settings.device.lowBatterySleepEnabled = readBool("dev_lbs_en", settings.device.lowBatterySleepEnabled);
+    settings.device.lowBatterySleepThresholdPercent = readUInt("dev_lbs_pct", settings.device.lowBatterySleepThresholdPercent);
+    settings.device.lowBatteryWakeIntervalMinutes = readUInt("dev_lbs_wk", settings.device.lowBatteryWakeIntervalMinutes);
 
     settings = sanitize(settings);
     settings.mqtt.clientId = fallbackIfEmpty(settings.mqtt.clientId, settings.device.deviceName);
@@ -251,6 +259,9 @@ bool SettingsManager::save(const SettingsBundle& settings) {
     changed |= writeStringIfChanged("dev_friendly", sanitized.device.friendlyName);
     changed |= writeUIntIfChanged("dev_vol", sanitized.device.savedVolumePercent);
     changed |= writeBoolIfChanged("dev_muted", sanitized.device.audioMuted);
+    changed |= writeBoolIfChanged("dev_lbs_en", sanitized.device.lowBatterySleepEnabled);
+    changed |= writeUIntIfChanged("dev_lbs_pct", sanitized.device.lowBatterySleepThresholdPercent);
+    changed |= writeUIntIfChanged("dev_lbs_wk", sanitized.device.lowBatteryWakeIntervalMinutes);
     changed |= writeBoolIfChanged(PREF_MARKER, true);
     return changed;
 }
@@ -318,6 +329,9 @@ void SettingsManager::toJson(const SettingsBundle& settings, JsonObject root) co
     device["friendlyName"] = settings.device.friendlyName;
     device["savedVolumePercent"] = settings.device.savedVolumePercent;
     device["audioMuted"] = settings.device.audioMuted;
+    device["lowBatterySleepEnabled"] = settings.device.lowBatterySleepEnabled;
+    device["lowBatterySleepThresholdPercent"] = settings.device.lowBatterySleepThresholdPercent;
+    device["lowBatteryWakeIntervalMinutes"] = settings.device.lowBatteryWakeIntervalMinutes;
     root["usingSavedSettings"] = settings.usingSavedSettings;
 }
 
@@ -406,6 +420,9 @@ bool SettingsManager::updateFromJson(SettingsBundle& settings, JsonVariantConst 
         copyString(device, "friendlyName", settings.device.friendlyName);
         if (device["savedVolumePercent"].is<uint8_t>()) settings.device.savedVolumePercent = device["savedVolumePercent"].as<uint8_t>();
         if (device["audioMuted"].is<bool>()) settings.device.audioMuted = device["audioMuted"].as<bool>();
+        if (device["lowBatterySleepEnabled"].is<bool>()) settings.device.lowBatterySleepEnabled = device["lowBatterySleepEnabled"].as<bool>();
+        if (device["lowBatterySleepThresholdPercent"].is<uint8_t>()) settings.device.lowBatterySleepThresholdPercent = device["lowBatterySleepThresholdPercent"].as<uint8_t>();
+        if (device["lowBatteryWakeIntervalMinutes"].is<uint16_t>()) settings.device.lowBatteryWakeIntervalMinutes = device["lowBatteryWakeIntervalMinutes"].as<uint16_t>();
     }
 
     settings = sanitize(settings);

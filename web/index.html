@@ -66,6 +66,24 @@
         <div id="tab-playback" class="tab-panel" role="tabpanel">
           <h2>Audio</h2>
           <form id="playForm">
+            <div class="radio-browser-card">
+              <div class="radio-browser-head">
+                <strong>Radio Browser</strong>
+                <span id="radioBrowserStatus" class="scan-status">Loading countries...</span>
+              </div>
+              <div class="row radio-browser-row">
+                <label>Country
+                  <select id="radioCountrySelect">
+                    <option value="">Loading countries...</option>
+                  </select>
+                </label>
+                <label>Station
+                  <select id="radioStationSelect" disabled>
+                    <option value="">Select a country first</option>
+                  </select>
+                </label>
+              </div>
+            </div>
             <div class="row">
               <label>URL
                 <input id="playUrl" name="url" type="url" placeholder="https://example.com/stream.mp3" required>
@@ -87,8 +105,7 @@
               </label>
             </div>
             <div class="inline-actions">
-              <button type="submit">Play</button>
-              <button type="button" id="stopButton" class="secondary">Stop</button>
+              <button type="button" id="playbackActionButton">Play</button>
               <button type="button" id="copyUrlButton" class="secondary">Copy Current URL</button>
               <span id="playbackHint" class="scan-status">Recent playback is stored locally in this browser.</span>
             </div>
@@ -97,7 +114,7 @@
               <input id="volumeSlider" name="device.savedVolumePercent" form="settingsForm" type="range" min="0" max="100" step="1">
             </div>
             <label class="check"><input id="audioMutedToggle" name="device.audioMuted" form="settingsForm" type="checkbox"> Mute audio and sound effects</label>
-            <p id="audioMutedNote" class="note">Muted by default. This build also keeps stream playback disabled until the audio diagnostic flag is removed.</p>
+            <p id="audioMutedNote" class="note">Stream playback is enabled in this build. Pick a Radio Browser station or enter a direct stream URL manually.</p>
           </form>
 
           <div class="firmware-list" id="recentPlaybackList"></div>
@@ -244,6 +261,14 @@
             <label>Saved Volume (%)
               <input form="settingsForm" name="device.savedVolumePercent" type="number" min="0" max="100">
             </label>
+            <label class="check"><input id="lowBatterySleepToggle" form="settingsForm" name="device.lowBatterySleepEnabled" type="checkbox"> Deep sleep on low battery</label>
+            <label>Sleep Threshold <span id="lowBatterySleepThresholdValue">20%</span>
+              <input id="lowBatterySleepThreshold" form="settingsForm" name="device.lowBatterySleepThresholdPercent" type="range" min="1" max="100" step="1">
+            </label>
+            <label>Wake Every (minutes)
+              <input id="lowBatteryWakeIntervalMinutes" form="settingsForm" name="device.lowBatteryWakeIntervalMinutes" type="number" min="0" max="1440">
+            </label>
+            <p class="note">When enabled, the notifier estimates charge from battery voltage, enters deep sleep at or below the threshold, turns the OLED off, then wakes on the configured timer to briefly reconnect and check network activity before sleeping again while battery remains low. Set wake interval to 0 to stay asleep until a manual wake or power cycle.</p>
             <label class="check"><input form="settingsForm" name="webAuth.enabled" type="checkbox"> Require login</label>
             <div class="row">
               <label>Web Username

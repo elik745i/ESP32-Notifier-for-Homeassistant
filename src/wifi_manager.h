@@ -38,6 +38,13 @@ class WiFiManager {
     bool shouldRedirectCaptivePortal(const String& hostHeader) const;
 
   private:
+    struct PreferredAccessPoint {
+        bool found = false;
+        int32_t rssi = INT32_MIN;
+        int32_t channel = 0;
+        uint8_t bssid[6] = {0, 0, 0, 0, 0, 0};
+    };
+
     static constexpr uint16_t DNS_PORT = 53;
     static constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 20000;
     static constexpr uint32_t WIFI_RETRY_INTERVAL_MS = 15000;
@@ -74,4 +81,5 @@ class WiFiManager {
     void setFrontendError(const String& message);
     void handleDisconnectEvent(arduino_event_info_t info);
     void registerFailedAttempt(const char* reason);
+    PreferredAccessPoint findPreferredAccessPoint();
 };

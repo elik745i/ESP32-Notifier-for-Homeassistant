@@ -64,6 +64,21 @@ void DisplayManager::setBootMessage(const String& message) {
     lastSignature_ = "";
 }
 
+void DisplayManager::powerOff() {
+    if (!isEnabled()) {
+        return;
+    }
+
+    clearDisplay();
+    flushDisplay();
+    if (ssd1306_) {
+        ssd1306_->ssd1306_command(SSD1306_DISPLAYOFF);
+    }
+    if (sh1106_) {
+        sh1106_->oled_command(SH110X_DISPLAYOFF);
+    }
+}
+
 bool DisplayManager::isEnabled() const {
     return settings_.enabled && (ssd1306_ || sh1106_);
 }
@@ -128,7 +143,6 @@ void DisplayManager::drawOtaProgress(Adafruit_GFX& display, const AppStateSnapsh
     const int16_t lowerDivider = bottomDividerY(displayHeight);
     const int16_t centerTop = upperDivider + 6;
     const int16_t centerBottom = lowerDivider - 5;
-    const int16_t centerHeight = max<int16_t>(18, centerBottom - centerTop);
     const uint8_t progress = state.ota.progressPercent;
     String label = state.ota.phase.isEmpty() ? String("Updating") : state.ota.phase;
     label += " ";
