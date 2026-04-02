@@ -54,7 +54,7 @@ Recent firmware and web UI updates included in this version:
 - volume changes now update playback immediately while deferring NVS persistence to avoid interrupting active streams
 - the dedicated `esp32_notifier_hacs` build now publishes a discovery and control contract compatible with the `bkbilly/mqtt_media_player` integration while keeping the web UI enabled
 
-The Home Assistant integration supports the direct MQTT URL-command path and includes Home Assistant example configuration for wrapping the notifier as a Home Assistant player entity:
+The Home Assistant media-player path documented in this repository uses the HACS integration [`bkbilly/mqtt_media_player`](https://github.com/bkbilly/mqtt_media_player) together with the `esp32_notifier_hacs` firmware profile:
 
 - `play URL`
 - `play TTS URL`
@@ -70,8 +70,8 @@ The firmware publishes MQTT state for:
 
 Current limitation:
 
-- Home Assistant core MQTT discovery still does not create a native `media_player` entity for the default firmware on its own
-- use the included Home Assistant package example to create a wrapper player entity inside Home Assistant while still using the notifier's built-in MQTT topics
+- Home Assistant core MQTT discovery alone is still not enough for a media-player entity on the default firmware profile
+- use the `esp32_notifier_hacs` build together with [`bkbilly/mqtt_media_player`](https://github.com/bkbilly/mqtt_media_player) when you want the notifier discovered as a Home Assistant media player
 - if the firmware is built with the diagnostic audio-disable flag enabled, playback actions will not start audio until that build flag is removed
 
 ## Dev Board
@@ -174,9 +174,6 @@ Related external references mentioned in the overview:
 - [web/index.html](web/index.html)
 - [web/style.css](web/style.css)
 - [web/app.js](web/app.js)
-- [home_assistant/example_package.yaml](home_assistant/example_package.yaml)
-- [home_assistant/example_scripts.yaml](home_assistant/example_scripts.yaml)
-- [home_assistant/example_automations.yaml](home_assistant/example_automations.yaml)
 
 ## Library Choices
 
@@ -362,55 +359,13 @@ Volume:
 
 Example HA files are included in [home_assistant](home_assistant).
 
-Current integration paths:
+Recommended media-player integration:
 
-1. Use MQTT discovery to add the notifier's sensors, number, button, and text entities.
-2. Use the included package to create a Home Assistant `universal` wrapper `media_player` that targets the notifier's MQTT bridge.
-3. The wrapper supports `play_media`, `media_stop`, `volume_set`, and `select_source`, and forwards Home Assistant-style media payloads into the notifier's existing MQTT command topics.
-4. If your TTS engine can expose a direct MP3 or stream URL, publish that URL to `cmd/tts` or route it through the wrapper player's `play_media` call.
-5. If you want the notifier to appear in Home Assistant's Media dashboard target picker with native browse/play handling, use the custom integration in [home_assistant/custom_components/esp32_notifier](home_assistant/custom_components/esp32_notifier).
-6. If you want to test a third-party HACS MQTT media-player integration, build the dedicated `esp32_notifier_hacs` environment, which keeps the local web UI and publishes an experimental compatibility layer for those integrations.
-
-Which integration to use:
-
-- Use the included package wrapper when you want the fastest setup and only need URL playback, TTS, volume, and preset sources.
-- Use the native custom integration when you want the notifier in Home Assistant's Media dashboard with browse/play support handled by Home Assistant.
-- Use `bkbilly/mqtt_media_player` from HACS with the `esp32_notifier_hacs` firmware build when you want a broker-discovered MQTT media player entity and still need the notifier web UI for device setup.
+- Use [`bkbilly/mqtt_media_player`](https://github.com/bkbilly/mqtt_media_player) from HACS with the `esp32_notifier_hacs` firmware build.
+- Keep Home Assistant's core MQTT integration enabled so the notifier can publish discovery, state, and command topics through your broker.
+- Use `esp32_notifier_hacs_slim` only if you explicitly want a no-web fallback build.
 
 Step-by-step Home Assistant setup:
-
-1. Install and configure the Home Assistant MQTT integration so it connects to the same broker as the notifier.
-2. In `configuration.yaml`, enable packages if you do not already use them:
-
-```yaml
-homeassistant:
-  packages: !include_dir_named packages
-```
-
-3. Create a package file such as `packages/esp32_notifier.yaml` in your Home Assistant config directory.
-4. Copy the contents of [home_assistant/example_package.yaml](home_assistant/example_package.yaml) into that package file.
-5. If your notifier uses a custom MQTT base topic, replace the default `esp32_notifier/...` topics in the package with your configured base topic.
-6. Edit the preset helper values in the package or in Home Assistant after the first restart:
-  `input_text.esp32_notifier_source_1_name` / `_url` through `source_4_name` / `_url` define the source picker entries.
-  `input_text.esp32_notifier_play_url` is used by the `Custom URL` source.
-7. Restart Home Assistant so the package is loaded.
-8. Verify the wrapper entities appear, especially the online binary sensor, playback state sensor, current source sensor, volume number, and the `ESP32 Notifier` media player.
-9. Open the `ESP32 Notifier` media player card and verify the source picker appears with your preset names plus `Custom URL`.
-10. Test playback first with a preset source or a direct MP3 URL through the `media_player.play_media` action before testing TTS.
-11. Test volume with the `media_player.volume_set` action using Home Assistant's `0..1` scale.
-12. For TTS, prefer a flow that produces a directly reachable audio URL and send it through the wrapper player or the included speak helper script.
-
-Native Media Dashboard option:
-
-1. Copy [home_assistant/custom_components/esp32_notifier](home_assistant/custom_components/esp32_notifier) into your Home Assistant config directory under `custom_components/esp32_notifier`.
-2. Add a `media_player:` platform entry using [home_assistant/example_custom_integration.yaml](home_assistant/example_custom_integration.yaml) as the starting point.
-3. Set `base_topic` to the notifier MQTT base topic and `device_name` to a stable identifier for the entity registry.
-4. Set `media_source_base_url` to a Home Assistant URL that the ESP32 can reach on your network. This is important when Home Assistant resolves `media-source://...` items into relative URLs.
-5. Restart Home Assistant.
-6. If you were previously using the wrapper `media_player` from [home_assistant/example_package.yaml](home_assistant/example_package.yaml), remove or comment out its `media_player:` block to avoid duplicate `ESP32 Notifier` players.
-7. After restart, the custom integration entity should be usable from the Media dashboard target picker and should resolve Home Assistant media-browser selections into direct URLs before sending them to the notifier over MQTT.
-
-Pure MQTT Media Player option:
 
 1. Install the `bkbilly/mqtt_media_player` integration from HACS.
 2. Build and flash the `esp32_notifier_hacs` environment instead of the default firmware profile.
@@ -420,49 +375,20 @@ Pure MQTT Media Player option:
 6. The integration should discover the notifier from `homeassistant/media_player/<device_name>/config` and subscribe to `<base_topic>/hacs/...` plus `<base_topic>/hacs/cmd/...`.
 7. Use `esp32_notifier_hacs_slim` only if you explicitly want a no-web fallback build.
 
-Important package syntax note:
-
-- Current Home Assistant versions expect MQTT YAML entities under a top-level `mqtt:` key in packages.
-- Older `platform: mqtt` under `sensor:`, `binary_sensor:`, or `number:` will trigger Home Assistant repair warnings and should not be used.
-
-Current Home Assistant wrapper scope:
-
-- Home Assistant can expose the notifier as a `media_player` by wrapping the MQTT entities and scripts with a `universal` media player.
-- The included wrapper now accepts Home Assistant-style `play_media` fields such as `media_content_id`, `media_content_type`, optional `extra.title`, and `announce`.
-- The wrapper also exposes a real `source_list` and `select_source` flow backed by editable preset name/URL pairs in the package.
-- Playback state, title, URL, and volume are still published back from the notifier over MQTT.
-
-Important current limitation:
-
-- Because Home Assistant MQTT discovery does not natively create a `media_player` for this device, the wrapper package is still required for the notifier to appear in the media-player list.
-- The notifier is most reliable today with direct URL-based playback, whether that URL comes from a script, HA automation, or the HA wrapper `play_media` action.
-- Source selection in Home Assistant is implemented as named URL presets plus a `Custom URL` fallback, not as a browsable streaming catalog.
-- The Home Assistant Media dashboard target picker and full built-in media-browser flow are not fully provided by this YAML wrapper alone; matching that exact behavior requires a native/custom Home Assistant media player integration that resolves `media-source://...` items into playable URLs before forwarding them to the notifier.
-- For TTS, the best path is still a directly reachable audio URL. If Home Assistant passes `announce: true`, the wrapper/firmware path now marks the playback as `tts`.
-- If the firmware is built with `APP_DISABLE_AUDIO=1`, the HA-side wrapper player will exist but playback actions will not produce sound.
-
-Custom integration scope:
-
-- The custom integration provides a native `media_player` entity that subscribes directly to the notifier's MQTT topics.
-- It implements Home Assistant `browse_media` and `play_media` natively, including resolving `media-source://...` selections into direct URLs before publishing them to the notifier.
-- This is the path intended for the Home Assistant Media dashboard target picker.
-- Named preset streams can also be configured directly in YAML under `sources:`.
-
 Experimental HACS MQTT media-player compatibility:
 
 - Build `esp32_notifier_hacs` when you want the MQTT Media Player compatible firmware profile with the web UI still enabled.
 - That profile additionally publishes flat retained topics under `<base_topic>/hacs/` for `state`, `title`, `mediatype`, and `volume`, with volume normalized to `0..1` for MQTT Media Player compatibility.
-- It publishes its discovery payload at `homeassistant/media_player/<device_name>/config`, which matches the `bkbilly/mqtt_media_player` integration's expected discovery path.
+- It publishes its discovery payload at `homeassistant/media_player/<device_name>/config`, which matches the [`bkbilly/mqtt_media_player`](https://github.com/bkbilly/mqtt_media_player) integration's expected discovery path.
 - The profile exposes dedicated compatibility command topics under `<base_topic>/hacs/cmd/` for `play`, `pause`, `playpause`, `stop`, `volume`, and `playmedia`.
-- Existing notifier JSON topics remain unchanged, so the current package and custom integration continue to work.
+- Existing notifier JSON topics remain available for automations that publish directly to MQTT.
 - `next` and `previous` are accepted as compatibility no-ops because the notifier does not implement queue-based transport controls.
 - Use `esp32_notifier_hacs_slim` only if you explicitly want a no-web fallback build.
 
 Practical TTS options right now:
 
 1. Use a TTS engine or workflow that can produce a directly reachable MP3/HTTP URL.
-2. Publish that URL to `esp32_notifier/cmd/tts` or pass it via the Home Assistant wrapper player's `play_media` path.
-3. Optionally use the included `script.esp32_notifier_speak_url` helper as the HA wrapper.
+2. Publish that URL to `esp32_notifier/cmd/tts` or trigger it through an automation that sends the same MQTT command.
 
 Media and radio playback are straightforward today because they are already URL-based.
 
