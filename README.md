@@ -359,7 +359,7 @@ Current integration paths:
 
 1. Use MQTT discovery to add the notifier's sensors, number, button, and text entities.
 2. Use the included package to create a Home Assistant `universal` wrapper `media_player` that targets the notifier's MQTT bridge.
-3. The wrapper supports `play_media`, `media_stop`, and `volume_set` and forwards Home Assistant-style media payloads into the notifier's existing MQTT command topics.
+3. The wrapper supports `play_media`, `media_stop`, `volume_set`, and `select_source`, and forwards Home Assistant-style media payloads into the notifier's existing MQTT command topics.
 4. If your TTS engine can expose a direct MP3 or stream URL, publish that URL to `cmd/tts` or route it through the wrapper player's `play_media` call.
 
 Step-by-step Home Assistant setup:
@@ -375,11 +375,15 @@ homeassistant:
 3. Create a package file such as `packages/esp32_notifier.yaml` in your Home Assistant config directory.
 4. Copy the contents of [home_assistant/example_package.yaml](home_assistant/example_package.yaml) into that package file.
 5. If your notifier uses a custom MQTT base topic, replace the default `esp32_notifier/...` topics in the package with your configured base topic.
-6. Restart Home Assistant so the package is loaded.
-7. Verify the wrapper entities appear, especially the online binary sensor, playback state sensor, volume number, and the `ESP32 Notifier` media player.
-8. Test playback first with a direct MP3 URL through the `media_player.play_media` action before testing TTS.
-9. Test volume with the `media_player.volume_set` action using Home Assistant's `0..1` scale.
-10. For TTS, prefer a flow that produces a directly reachable audio URL and send it through the wrapper player or the included speak helper script.
+6. Edit the preset helper values in the package or in Home Assistant after the first restart:
+  `input_text.esp32_notifier_source_1_name` / `_url` through `source_4_name` / `_url` define the source picker entries.
+  `input_text.esp32_notifier_play_url` is used by the `Custom URL` source.
+7. Restart Home Assistant so the package is loaded.
+8. Verify the wrapper entities appear, especially the online binary sensor, playback state sensor, current source sensor, volume number, and the `ESP32 Notifier` media player.
+9. Open the `ESP32 Notifier` media player card and verify the source picker appears with your preset names plus `Custom URL`.
+10. Test playback first with a preset source or a direct MP3 URL through the `media_player.play_media` action before testing TTS.
+11. Test volume with the `media_player.volume_set` action using Home Assistant's `0..1` scale.
+12. For TTS, prefer a flow that produces a directly reachable audio URL and send it through the wrapper player or the included speak helper script.
 
 Important package syntax note:
 
@@ -390,12 +394,14 @@ Current Home Assistant wrapper scope:
 
 - Home Assistant can expose the notifier as a `media_player` by wrapping the MQTT entities and scripts with a `universal` media player.
 - The included wrapper now accepts Home Assistant-style `play_media` fields such as `media_content_id`, `media_content_type`, optional `extra.title`, and `announce`.
+- The wrapper also exposes a real `source_list` and `select_source` flow backed by editable preset name/URL pairs in the package.
 - Playback state, title, URL, and volume are still published back from the notifier over MQTT.
 
 Important current limitation:
 
 - Because Home Assistant MQTT discovery does not natively create a `media_player` for this device, the wrapper package is still required for the notifier to appear in the media-player list.
 - The notifier is most reliable today with direct URL-based playback, whether that URL comes from a script, HA automation, or the HA wrapper `play_media` action.
+- Source selection in Home Assistant is implemented as named URL presets plus a `Custom URL` fallback, not as a browsable streaming catalog.
 - For TTS, the best path is still a directly reachable audio URL. If Home Assistant passes `announce: true`, the wrapper/firmware path now marks the playback as `tts`.
 - If the firmware is built with `APP_DISABLE_AUDIO=1`, the HA-side wrapper player will exist but playback actions will not produce sound.
 

@@ -376,7 +376,7 @@ bool saveSettingsFromJson(JsonVariantConst root, String& error) {
     return true;
 }
 
-bool playRequest(const String& url, const String& label, const String& type, String& error) {
+bool playRequest(const String& url, const String& label, const String& type, const String& source, String& error) {
     if (url.isEmpty()) {
         error = "URL is required";
         return false;
@@ -388,7 +388,11 @@ bool playRequest(const String& url, const String& label, const String& type, Str
     deferredActions->playUrl = url;
     deferredActions->playLabel = label;
     deferredActions->playType = type;
-    deferredActions->playSource = type == "tts" ? "home-assistant" : "manual";
+    if (!source.isEmpty()) {
+        deferredActions->playSource = source;
+    } else {
+        deferredActions->playSource = type == "tts" ? "home-assistant" : "manual";
+    }
     deferredActions->playPending = true;
     deferredActions->stopPending = false;
     return true;
@@ -407,7 +411,7 @@ void handleMqttCommand(const PlaybackCommand& command) {
         deferredActions->volumeSaveAt = millis() + kVolumePersistDelayMs;
     } else {
         String ignored;
-        playRequest(command.url, command.label, command.mediaType.isEmpty() ? command.action : command.mediaType, ignored);
+        playRequest(command.url, command.label, command.mediaType.isEmpty() ? command.action : command.mediaType, command.source, ignored);
     }
     mqttManager->publishState();
 }
@@ -524,7 +528,9 @@ void setup() {
         *otaManager,
         []() { return *settings; },
         saveSettingsFromJson,
-        playRequest,
+        [](const String& url, const String& label, const String& type, String& error) {
+            return playRequest(url, label, type, "", error);
+        },
         []() {
             deferredActions->stopPending = true;
             deferredActions->playPending = false;

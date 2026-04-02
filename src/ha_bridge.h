@@ -8,6 +8,7 @@ struct PlaybackCommand {
     String action;
     String url;
     String label;
+    String source;
     String mediaType;
     uint8_t volumePercent = 0;
 };

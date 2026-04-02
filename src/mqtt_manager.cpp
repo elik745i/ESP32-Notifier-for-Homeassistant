@@ -198,6 +198,7 @@ void MqttManager::handleMessage(char* topic, char* payload, AsyncMqttClientMessa
             const String explicitType = String(static_cast<const char*>(doc["type"] | ""));
             command.url = String(static_cast<const char*>(doc["url"] | doc["media_content_id"] | doc["media_id"] | ""));
             command.label = String(static_cast<const char*>(doc["label"] | doc["title"] | doc["media_title"] | doc["extra"]["title"] | ""));
+            command.source = String(static_cast<const char*>(doc["source"] | ""));
             command.mediaType = normalizeMediaType(
                 explicitType.isEmpty() ? mediaContentType : explicitType,
                 command.action == "tts" || announce);
