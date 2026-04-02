@@ -81,11 +81,16 @@ BatteryReading BatteryMonitor::sampleNow() {
     return reading;
 }
 
-bool BatteryMonitor::loop() {
+bool BatteryMonitor::loop(bool samplingAllowed) {
     const unsigned long now = millis();
     if (now - lastSampleAt_ < settings_.updateIntervalMs) {
         return false;
     }
+
+    if (!samplingAllowed) {
+        return false;
+    }
+
     lastSampleAt_ = now;
     latest_ = sampleNow();
     if (appState_ != nullptr) {

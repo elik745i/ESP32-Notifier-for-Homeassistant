@@ -10,6 +10,21 @@ String defaultApName() {
     snprintf(buffer, sizeof(buffer), "%s-%06lX", DefaultConfig::WIFI_AP_SSID_PREFIX, static_cast<unsigned long>(shortId));
     return String(buffer);
 }
+
+bool wifiRestartRequired(const SettingsBundle& current, const SettingsBundle& next) {
+    return current.device.deviceName != next.device.deviceName ||
+           current.wifi.ssid != next.wifi.ssid ||
+           current.wifi.password != next.wifi.password ||
+           current.wifi.apFallbackEnabled != next.wifi.apFallbackEnabled ||
+           current.wifi.apSsid != next.wifi.apSsid ||
+           current.wifi.apPassword != next.wifi.apPassword ||
+           current.wifi.useStaticIp != next.wifi.useStaticIp ||
+           current.wifi.staticIp != next.wifi.staticIp ||
+           current.wifi.gateway != next.wifi.gateway ||
+           current.wifi.subnet != next.wifi.subnet ||
+           current.wifi.dns1 != next.wifi.dns1 ||
+           current.wifi.dns2 != next.wifi.dns2;
+}
 }  // namespace
 
 void WiFiManager::begin(const SettingsBundle& settings, AppState& appState) {
@@ -21,13 +36,21 @@ void WiFiManager::begin(const SettingsBundle& settings, AppState& appState) {
 }
 
 void WiFiManager::applySettings(const SettingsBundle& settings) {
+    const bool needsRestart = !initialized_ || wifiRestartRequired(settings_, settings);
     settings_ = settings;
     if (settings_.device.deviceName.length() > 0) {
         WiFi.setHostname(settings_.device.deviceName.c_str());
     }
     apSsid_ = settings_.wifi.apSsid.isEmpty() ? defaultApName() : settings_.wifi.apSsid;
+    if (!needsRestart) {
+        updateAppState();
+        initialized_ = true;
+        return;
+    }
+
     stopAccessPoint();
     startStation();
+    initialized_ = true;
 }
 
 void WiFiManager::startStation() {
@@ -173,8 +196,8 @@ WiFiManager::ScanSnapshot WiFiManager::getScanSnapshot() const {
     const int scanState = WiFi.scanComplete();
     ScanSnapshot snapshot;
     snapshot.active = scanState == WIFI_SCAN_RUNNING;
-    snapshot.complete = scanState >= 0;
-    snapshot.failed = lastScanStartedAt_ != 0 && scanState == WIFI_SCAN_FAILED;
+    snapshot.complete = scanState >= 0 || (lastScanCompleted_ && lastScanStartedAt_ != 0);
+    snapshot.failed = lastScanStartedAt_ != 0 && !lastScanCompleted_ && scanState == WIFI_SCAN_FAILED;
     snapshot.ageMs = lastScanStartedAt_ == 0 ? 0 : millis() - lastScanStartedAt_;
     return snapshot;
 }
@@ -187,12 +210,14 @@ bool WiFiManager::startScan() {
     if (scanState >= 0 || scanState == WIFI_SCAN_FAILED) {
         WiFi.scanDelete();
     }
+    lastScanCompleted_ = false;
     WiFi.enableSTA(true);
     const int scanResult = WiFi.scanNetworks(true, true);
     if (scanResult == WIFI_SCAN_FAILED) {
         delay(50);
         const int retryResult = WiFi.scanNetworks(true, true);
         if (retryResult == WIFI_SCAN_FAILED) {
+            lastScanStartedAt_ = 0;
             return false;
         }
     }
@@ -208,6 +233,8 @@ void WiFiManager::appendScanResultsJson(JsonArray networks) {
         }
         return;
     }
+
+    lastScanCompleted_ = true;
 
     for (int index = 0; index < networkCount; ++index) {
         const String ssid = WiFi.SSID(index);

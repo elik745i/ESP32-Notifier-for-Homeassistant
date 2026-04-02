@@ -8,8 +8,14 @@
 #include "version.h"
 
 namespace {
+constexpr unsigned long RELEASE_CACHE_TTL_MS = 5UL * 60UL * 1000UL;
+
 String githubApiLatestUrl(const SettingsBundle& settings) {
     return String("https://api.github.com/repos/") + settings.ota.owner + "/" + settings.ota.repository + "/releases/latest";
+}
+
+String githubApiReleasesUrl(const SettingsBundle& settings) {
+    return String("https://api.github.com/repos/") + settings.ota.owner + "/" + settings.ota.repository + "/releases?per_page=10";
 }
 
 String githubReleaseAssetUrl(const SettingsBundle& settings, const String& version, const String& assetName) {
@@ -19,6 +25,21 @@ String githubReleaseAssetUrl(const SettingsBundle& settings, const String& versi
 String applyVersionTemplate(String templ, const String& version) {
     templ.replace("${version}", version);
     return templ;
+}
+
+String chooseReleaseAssetUrl(JsonArrayConst assets, const String& preferredAssetName) {
+    String firstBinUrl;
+    for (JsonObjectConst asset : assets) {
+        const String name = String(static_cast<const char*>(asset["name"] | ""));
+        const String url = String(static_cast<const char*>(asset["browser_download_url"] | ""));
+        if (name == preferredAssetName) {
+            return url;
+        }
+        if (firstBinUrl.isEmpty() && name.endsWith(".bin")) {
+            firstBinUrl = url;
+        }
+    }
+    return firstBinUrl;
 }
 
 }  // namespace
@@ -47,9 +68,20 @@ void OtaManager::syncAppState(const String& lastResult, const String& lastError)
     }
 }
 
+void OtaManager::pumpProgressCallback() {
+    if (progressCallback_ != nullptr) {
+        progressCallback_();
+    }
+    yield();
+}
+
 void OtaManager::begin(const SettingsBundle& settings, AppState& appState) {
     appState_ = &appState;
     applySettings(settings);
+}
+
+void OtaManager::setProgressCallback(void (*callback)()) {
+    progressCallback_ = callback;
 }
 
 void OtaManager::applySettings(const SettingsBundle& settings) {
@@ -60,6 +92,12 @@ void OtaManager::loop() {
     if (rebootPending_ && static_cast<long>(millis() - rebootAtMs_) >= 0) {
         rebootPending_ = false;
         ESP.restart();
+    }
+    if (!pendingInstallVersion_.isEmpty() && !busy_) {
+        const String version = pendingInstallVersion_;
+        pendingInstallVersion_ = "";
+        runVersionTask(version);
+        return;
     }
     if (pendingCheck_ && !busy_) {
         const bool applyAfterCheck = pendingApply_;
@@ -110,6 +148,7 @@ bool OtaManager::beginLocalUpload(const String& filename, size_t totalSize, Stri
         return false;
     }
     syncAppState("updating");
+    pumpProgressCallback();
     return true;
 }
 
@@ -143,6 +182,7 @@ bool OtaManager::writeLocalUploadChunk(const uint8_t* data, size_t len, String& 
         lastMessage_ = String("Flashing local firmware... ") + progressPercent_ + "%";
     }
     syncAppState("updating");
+    pumpProgressCallback();
     return true;
 }
 
@@ -175,6 +215,7 @@ bool OtaManager::finishLocalUpload(String& error) {
     updatePhase_ = "";
     lastMessage_ = "Local firmware uploaded. Restarting...";
     syncAppState("installed");
+    pumpProgressCallback();
     scheduleReboot(1500);
     return true;
 }
@@ -189,6 +230,7 @@ void OtaManager::abortLocalUpload(const String& error) {
     selectedVersion_ = "local";
     lastMessage_ = error;
     syncAppState("error", error);
+    pumpProgressCallback();
 }
 
 void OtaManager::appendStatusJson(JsonObject root) const {
@@ -201,6 +243,58 @@ void OtaManager::appendStatusJson(JsonObject root) const {
     root["updateProgress"] = progressPercent_;
     root["updateBytes"] = progressBytes_;
     root["updateTotalBytes"] = progressTotalBytes_;
+}
+
+void OtaManager::appendFirmwareInfoJson(JsonObject root, bool refresh, String& error) {
+    root["currentVersion"] = normalizeVersion(APP_VERSION);
+    root["updateBusy"] = busy_;
+    root["updateStatus"] = lastMessage_;
+    root["selectedVersion"] = selectedVersion_;
+    root["updatePhase"] = updatePhase_;
+    root["updateProgress"] = progressPercent_;
+    root["updateBytes"] = progressBytes_;
+    root["updateTotalBytes"] = progressTotalBytes_;
+
+    if (fetchAvailableReleases(refresh, error)) {
+        root["latestVersion"] = latestVersion_;
+        JsonArray releases = root["releases"].to<JsonArray>();
+        for (const ReleaseInfo& release : releaseCache_) {
+            JsonObject item = releases.add<JsonObject>();
+            item["tag"] = release.tag;
+            item["name"] = release.name;
+            item["publishedAt"] = release.publishedAt;
+            item["assetUrl"] = release.assetUrl;
+            item["assetName"] = release.assetName;
+            item["prerelease"] = release.prerelease;
+            item["isCurrent"] = release.isCurrent;
+            item["isLatest"] = release.isLatest;
+            item["isNew"] = release.isNew;
+        }
+        return;
+    }
+
+    root["latestVersion"] = latestVersion_;
+    root["error"] = error;
+}
+
+bool OtaManager::triggerInstallVersion(const String& version, String& error) {
+    if (busy_) {
+        error = "Another update is already in progress.";
+        return false;
+    }
+
+    if (version.isEmpty()) {
+        error = "Select a firmware release first.";
+        return false;
+    }
+
+    const String normalizedVersion = normalizeVersion(version);
+    pendingInstallVersion_ = normalizedVersion;
+    selectedVersion_ = normalizedVersion;
+    resetProgress();
+    lastMessage_ = String("queued install ") + normalizedVersion;
+    syncAppState("queued");
+    return true;
 }
 
 void OtaManager::runTask(bool applyAfterCheck) {
@@ -227,6 +321,40 @@ void OtaManager::runTask(bool applyAfterCheck) {
         busy_ = false;
         return;
     }
+
+    String installMessage;
+    if (!installNow(result, installMessage)) {
+        lastMessage_ = installMessage;
+        syncAppState("error", installMessage);
+        busy_ = false;
+        return;
+    }
+
+    lastMessage_ = installMessage;
+    syncAppState("installed");
+    busy_ = false;
+    scheduleReboot(1500);
+}
+
+void OtaManager::runVersionTask(const String& version) {
+    busy_ = true;
+    selectedVersion_ = version;
+    resetProgress();
+    updatePhase_ = "Checking";
+    lastMessage_ = String("checking ") + version;
+    syncAppState("checking");
+
+    CheckResult result;
+    String error;
+    if (!resolveVersionResult(version, result, error)) {
+        lastMessage_ = error;
+        syncAppState("error", error);
+        busy_ = false;
+        return;
+    }
+
+    latestVersion_ = releaseCache_.empty() ? version : latestVersion_;
+    updateAvailable_ = compareVersions(normalizeVersion(APP_VERSION), version) < 0;
 
     String installMessage;
     if (!installNow(result, installMessage)) {
@@ -269,10 +397,130 @@ int OtaManager::compareVersions(const String& left, const String& right) const {
 }
 
 String OtaManager::normalizeVersion(const String& value) const {
+    if (value.isEmpty()) {
+        return "";
+    }
     if (value.startsWith("v") || value.startsWith("V")) {
         return value;
     }
     return "v" + value;
+}
+
+bool OtaManager::fetchAvailableReleases(bool refresh, String& error) {
+    if (!refresh && !releaseCache_.empty() && (millis() - releasesFetchedAtMs_) < RELEASE_CACHE_TTL_MS) {
+        return true;
+    }
+
+    if (WiFi.status() != WL_CONNECTED) {
+        error = "Connect to Wi-Fi to check GitHub releases.";
+        return false;
+    }
+
+    WiFiClientSecure client;
+    if (settings_.ota.allowInsecureTls) {
+        client.setInsecure();
+    }
+
+    HTTPClient http;
+    http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+    http.setTimeout(10000);
+    if (!http.begin(client, githubApiReleasesUrl(settings_))) {
+        error = "Could not open GitHub releases API.";
+        return false;
+    }
+
+    http.addHeader("Accept", "application/vnd.github+json");
+    http.addHeader("User-Agent", String(APP_NAME "/" APP_VERSION));
+    http.addHeader("X-GitHub-Api-Version", "2022-11-28");
+
+    const int code = http.GET();
+    if (code != HTTP_CODE_OK) {
+        error = String("GitHub API error: HTTP ") + code;
+        http.end();
+        return false;
+    }
+
+    JsonDocument filter;
+    JsonObject releaseFilter = filter[0].to<JsonObject>();
+    releaseFilter["tag_name"] = true;
+    releaseFilter["name"] = true;
+    releaseFilter["draft"] = true;
+    releaseFilter["prerelease"] = true;
+    releaseFilter["published_at"] = true;
+    JsonObject assetFilter = releaseFilter["assets"][0].to<JsonObject>();
+    assetFilter["name"] = true;
+    assetFilter["browser_download_url"] = true;
+
+    JsonDocument doc;
+    const DeserializationError parseError = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
+    http.end();
+    if (parseError != DeserializationError::Ok) {
+        error = String("GitHub response parse failed: ") + parseError.c_str();
+        return false;
+    }
+    if (!doc.is<JsonArray>()) {
+        error = "GitHub response format invalid.";
+        return false;
+    }
+
+    releaseCache_.clear();
+    latestVersion_ = "";
+    const String currentVersion = normalizeVersion(APP_VERSION);
+    for (JsonObjectConst release : doc.as<JsonArrayConst>()) {
+        if (release["draft"] | false) {
+            continue;
+        }
+
+        ReleaseInfo item;
+        item.tag = normalizeVersion(String(static_cast<const char*>(release["tag_name"] | "")));
+        if (item.tag.isEmpty()) {
+            continue;
+        }
+        item.name = String(static_cast<const char*>(release["name"] | ""));
+        item.publishedAt = String(static_cast<const char*>(release["published_at"] | ""));
+        item.prerelease = release["prerelease"] | false;
+        item.assetName = applyVersionTemplate(settings_.ota.assetTemplate, item.tag);
+        item.assetUrl = chooseReleaseAssetUrl(release["assets"].as<JsonArrayConst>(), item.assetName);
+        if (item.assetUrl.isEmpty()) {
+            item.assetUrl = githubReleaseAssetUrl(settings_, item.tag, item.assetName);
+        }
+        item.isCurrent = compareVersions(currentVersion, item.tag) == 0;
+        item.isNew = compareVersions(currentVersion, item.tag) < 0;
+        if (latestVersion_.isEmpty() && !item.prerelease) {
+            latestVersion_ = item.tag;
+            item.isLatest = true;
+        }
+        releaseCache_.push_back(item);
+    }
+
+    if (latestVersion_.isEmpty() && !releaseCache_.empty()) {
+        latestVersion_ = releaseCache_.front().tag;
+        releaseCache_.front().isLatest = true;
+    }
+    releasesFetchedAtMs_ = millis();
+    return true;
+}
+
+bool OtaManager::resolveVersionResult(const String& version, CheckResult& result, String& error) {
+    if (!fetchAvailableReleases(true, error)) {
+        return false;
+    }
+
+    for (const ReleaseInfo& release : releaseCache_) {
+        if (release.tag != version) {
+            continue;
+        }
+        result.success = true;
+        result.latestVersion = release.tag;
+        result.assetName = release.assetName;
+        result.assetUrl = release.assetUrl;
+        result.updateAvailable = compareVersions(normalizeVersion(APP_VERSION), release.tag) < 0;
+        result.message = result.updateAvailable ? "update available" : "selected release ready";
+        return true;
+    }
+
+    error = String("Release not found: ") + version;
+    return false;
 }
 
 OtaManager::CheckResult OtaManager::checkNow() {
@@ -376,6 +624,7 @@ bool OtaManager::installNow(const CheckResult& result, String& message) {
     progressTotalBytes_ = 0;
     progressPercent_ = 0;
     syncAppState("updating");
+    pumpProgressCallback();
     WiFiClientSecure client;
     if (settings_.ota.allowInsecureTls) {
         client.setInsecure();
@@ -416,6 +665,7 @@ bool OtaManager::installNow(const CheckResult& result, String& message) {
     while (http.connected() && written < contentLength) {
         const size_t available = stream->available();
         if (available == 0) {
+            pumpProgressCallback();
             delay(1);
             continue;
         }
@@ -436,6 +686,7 @@ bool OtaManager::installNow(const CheckResult& result, String& message) {
         progressPercent_ = static_cast<uint8_t>(min(100, (written * 100) / contentLength));
         lastMessage_ = String("Flashing firmware... ") + progressPercent_ + "%";
         syncAppState("updating");
+        pumpProgressCallback();
     }
 
     uint8_t digest[32];
@@ -470,5 +721,7 @@ bool OtaManager::installNow(const CheckResult& result, String& message) {
     progressBytes_ = progressTotalBytes_;
     progressPercent_ = 100;
     message = "update installed";
+    syncAppState("installed");
+    pumpProgressCallback();
     return true;
 }

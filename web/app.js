@@ -4,12 +4,23 @@ const state = {
   recentPlayback: loadRecentPlayback(),
   wifiScanPollTimer: null,
   firmwareProgressPollTimer: null,
+  firmwareReloadTimer: null,
   settingsSaveTimer: null,
   settingsDirty: false,
   settingsLoading: false,
   settingsSaving: false,
+  wifiScanRequestId: 0,
+  firmwareReleasesLoaded: false,
+  firmwareReleasesLoading: false,
+  firmwareReleases: [],
+  firmwareLatestVersion: "",
+  firmwareSelectedVersion: "",
+  awaitingFirmwareReboot: false,
+  firmwareReloadPending: false,
+  wifiSelectionPending: false,
   wifiConnectInProgress: false,
   mqttConnectInProgress: false,
+  mqttActionInProgress: "",
 };
 
 const SETTINGS_AUTOSAVE_DELAY_MS = 900;
@@ -47,6 +58,8 @@ const elements = {
   latestVersion: document.getElementById("latestVersion"),
   otaProgressFill: document.getElementById("otaProgressFill"),
   otaProgressLabel: document.getElementById("otaProgressLabel"),
+  firmwareList: document.getElementById("firmwareList"),
+  firmwareSelectionLabel: document.getElementById("firmwareSelectionLabel"),
   uploadFirmwareButton: document.getElementById("uploadFirmwareButton"),
   localFirmwareFile: document.getElementById("localFirmwareFile"),
   localFirmwareLabel: document.getElementById("localFirmwareLabel"),
@@ -87,6 +100,125 @@ function loadRecentPlayback() {
 
 function saveRecentPlayback() {
   window.localStorage.setItem("notifierRecentPlayback", JSON.stringify(state.recentPlayback.slice(0, 6)));
+}
+
+function selectedFirmwareVersion() {
+  const selected = document.querySelector('input[name="firmwareVersion"]:checked');
+  return selected ? selected.value : "";
+}
+
+function updateFirmwareSelectionLabel() {
+  const selected = selectedFirmwareVersion();
+  state.firmwareSelectedVersion = selected;
+  if (elements.firmwareSelectionLabel) {
+    elements.firmwareSelectionLabel.textContent = selected ? `Selected: ${selected}` : "No firmware selected";
+  }
+}
+
+function showFirmwareListStatus(text, isError = false) {
+  if (!elements.firmwareList) {
+    return;
+  }
+  elements.firmwareList.innerHTML = "";
+  const note = document.createElement("div");
+  note.className = "note";
+  note.textContent = text;
+  if (isError) {
+    note.style.color = "#b42318";
+  }
+  elements.firmwareList.appendChild(note);
+  updateFirmwareSelectionLabel();
+}
+
+function renderFirmwareList(releases, currentVersion, latestVersion, selectedVersion) {
+  if (!elements.firmwareList) {
+    return;
+  }
+
+  elements.firmwareList.innerHTML = "";
+  if (!releases.length) {
+    showFirmwareListStatus("No firmware releases are available right now.");
+    return;
+  }
+
+  releases.forEach((release, index) => {
+    const item = document.createElement("label");
+    item.className = "firmware-item";
+
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    radio.name = "firmwareVersion";
+    radio.value = release.tag;
+    radio.checked = Boolean(
+      (selectedVersion && release.tag === selectedVersion) ||
+      (!selectedVersion && (release.isLatest || (!latestVersion && index === 0)))
+    );
+    radio.addEventListener("change", updateFirmwareSelectionLabel);
+
+    const meta = document.createElement("div");
+    meta.className = "firmware-meta";
+
+    const title = document.createElement("div");
+    title.className = "firmware-title";
+    title.textContent = release.name || release.tag;
+
+    const subtitle = document.createElement("div");
+    subtitle.className = "firmware-subtitle";
+    subtitle.textContent = `${release.tag} - ${release.publishedAt || "unknown date"} - ${release.assetName || "firmware asset"}`;
+
+    meta.appendChild(title);
+    meta.appendChild(subtitle);
+
+    const badges = document.createElement("div");
+    badges.className = "badge-row";
+
+    if (release.isCurrent || release.tag === currentVersion) {
+      const badge = document.createElement("span");
+      badge.className = "badge current";
+      badge.textContent = "Installed";
+      badges.appendChild(badge);
+    }
+
+    if (release.isLatest || release.tag === latestVersion) {
+      const badge = document.createElement("span");
+      badge.className = `badge ${release.isNew ? "new" : "latest"}`;
+      badge.textContent = release.isNew ? "New" : "Latest";
+      badges.appendChild(badge);
+    }
+
+    if (release.prerelease) {
+      const badge = document.createElement("span");
+      badge.className = "badge";
+      badge.textContent = "Pre-release";
+      badges.appendChild(badge);
+    }
+
+    item.appendChild(radio);
+    item.appendChild(meta);
+    item.appendChild(badges);
+    elements.firmwareList.appendChild(item);
+  });
+
+  updateFirmwareSelectionLabel();
+}
+
+function beginFirmwareReconnectReload(initialDelayMs = 12000) {
+  if (state.firmwareReloadPending) {
+    return;
+  }
+  state.firmwareReloadPending = true;
+  if (state.firmwareReloadTimer) {
+    window.clearTimeout(state.firmwareReloadTimer);
+  }
+  state.firmwareReloadTimer = window.setTimeout(async function pollDeviceReturn() {
+    try {
+      await fetch(`/api/status?ts=${Date.now()}`, { cache: "no-store" });
+      window.location.reload();
+      return;
+    } catch {
+      state.firmwareReloadTimer = window.setTimeout(pollDeviceReturn, 3000);
+    }
+  }, initialDelayMs);
 }
 
 function setPill(element, label, mode) {
@@ -198,6 +330,14 @@ function charsForWidth(width, textSize) {
   return Math.max(4, Math.floor(width / (6 * textSize)));
 }
 
+function oledTopDividerY(height) {
+  return Math.min(11, Math.floor(height / 4));
+}
+
+function oledBottomDividerY(height) {
+  return Math.max(height - 12, height - 12);
+}
+
 function truncateOledText(text, maxChars) {
   const value = String(text || "");
   if (value.length <= maxChars) {
@@ -247,26 +387,47 @@ function renderOledPreview() {
   const bottom = `${status?.network?.wifiConnected ? "WiFi" : "AP"} ${Number(status?.battery?.voltage || 0).toFixed(2)}V ${status?.network?.mqttConnected ? "MQTT" : "noMQTT"}`;
   const isUpdating = Boolean(status?.ota?.busy);
   const progress = Number(status?.ota?.progressPercent || 0);
+  const topDivider = oledTopDividerY(effectiveHeight);
+  const bottomDivider = oledBottomDividerY(effectiveHeight);
+  const centerTop = topDivider + 6;
+  const centerBottom = bottomDivider - 5;
+  const centerHeight = Math.max(18, centerBottom - centerTop);
+  const labelY = centerTop;
+  const progressBarHeight = 12;
+  const progressBarY = Math.min(centerBottom - progressBarHeight, labelY + 12);
 
   const topNode = oledPreviewNode(".oled-preview-top");
   const centerNode = oledPreviewNode(".oled-preview-center");
   const bottomNode = oledPreviewNode(".oled-preview-bottom");
+  const topDividerNode = oledPreviewNode(".oled-preview-divider-top");
+  const bottomDividerNode = oledPreviewNode(".oled-preview-divider-bottom");
   if (topNode) {
     topNode.textContent = truncateOledText(top, topChars);
   }
   if (centerNode) {
     centerNode.textContent = truncateOledText(center, centerChars);
     centerNode.hidden = isUpdating;
+    centerNode.style.top = `${(centerTop / effectiveHeight) * 100}%`;
+    centerNode.style.height = `${(centerHeight / effectiveHeight) * 100}%`;
   }
   if (bottomNode) {
     bottomNode.textContent = truncateOledText(bottom, bottomChars);
   }
+  if (topDividerNode) {
+    topDividerNode.style.top = `${(topDivider / effectiveHeight) * 100}%`;
+  }
+  if (bottomDividerNode) {
+    bottomDividerNode.style.top = `${(bottomDivider / effectiveHeight) * 100}%`;
+  }
 
   if (elements.oledPreviewProgress) {
     elements.oledPreviewProgress.hidden = !isUpdating;
+    elements.oledPreviewProgress.style.top = `${(centerTop / effectiveHeight) * 100}%`;
+    elements.oledPreviewProgress.style.height = `${(centerHeight / effectiveHeight) * 100}%`;
   }
   if (elements.oledPreviewProgressLabel) {
     elements.oledPreviewProgressLabel.textContent = `${status?.ota?.phase || "Updating"} ${progress}%`;
+    elements.oledPreviewProgressLabel.style.minHeight = `${(12 / effectiveHeight) * 100}%`;
   }
   if (elements.oledPreviewProgressFill) {
     elements.oledPreviewProgressFill.style.width = `${Math.max(0, Math.min(100, progress))}%`;
@@ -418,6 +579,7 @@ function queueSettingsSave(delayMs = SETTINGS_AUTOSAVE_DELAY_MS) {
 }
 
 function renderWifiNetworks(networks) {
+  state.wifiSelectionPending = false;
   elements.wifiNetworkList.innerHTML = "";
 
   const placeholder = document.createElement("option");
@@ -438,6 +600,7 @@ function renderWifiNetworks(networks) {
 }
 
 function resetWifiNetworkList(message = "Select a scanned SSID") {
+  state.wifiSelectionPending = false;
   renderWifiNetworks([]);
   const placeholder = elements.wifiNetworkList.firstElementChild;
   if (placeholder) {
@@ -548,8 +711,21 @@ function renderStatus(status) {
     stopFirmwareProgressPolling();
   }
 
+  if (state.awaitingFirmwareReboot && !state.firmwareReloadPending) {
+    const installed = status.ota?.lastResult === "installed" || /installed|restarting/i.test(String(ota.message || ""));
+    if (installed) {
+      beginFirmwareReconnectReload();
+    }
+  }
+
   if (state.mqttConnectInProgress) {
-    if (mqttConnected) {
+    if (state.mqttActionInProgress === "disconnect") {
+      if (!mqttConnected) {
+        setMqttConnectStatus("MQTT disconnected.");
+      } else {
+        setMqttConnectStatus("Disconnecting from MQTT broker...");
+      }
+    } else if (mqttConnected) {
       setMqttConnectStatus(`Connected to ${status.settings?.mqtt?.host || namedField("mqtt.host")?.value || "broker"}`);
     } else if (!wifiConnected) {
       setMqttConnectStatus("Waiting for Wi-Fi before MQTT can connect...");
@@ -567,6 +743,7 @@ function renderStatus(status) {
   }
 
   updateWifiActionButton();
+  updateMqttActionButton();
   renderOledPreview();
 }
 
@@ -575,13 +752,20 @@ function updateWifiActionButton() {
     return;
   }
 
-  const ssid = String(namedField("wifi.ssid")?.value || "").trim();
-  const password = String(namedField("wifi.password")?.value || "").trim();
-  const hasSelectedNetwork = Boolean(String(elements.wifiNetworkList?.value || "").trim());
-  const connectMode = ssid.length > 0 && (hasSelectedNetwork || password.length > 0 || state.wifiConnectInProgress || ssid !== String(state.status?.network?.ssid || "").trim());
+  const connectMode = state.wifiSelectionPending || state.wifiConnectInProgress;
 
-  elements.scanWifiButton.textContent = connectMode ? "Connect Wi-Fi" : "Search Wi-Fi";
+  elements.scanWifiButton.textContent = connectMode ? "Connect Wi-Fi" : "Scan Network";
   elements.scanWifiButton.classList.toggle("secondary", !connectMode);
+}
+
+function updateMqttActionButton() {
+  if (!elements.mqttConnectButton) {
+    return;
+  }
+
+  const mqttConnected = Boolean(state.status?.network?.mqttConnected);
+  elements.mqttConnectButton.textContent = mqttConnected ? "Disconnect MQTT" : "Connect MQTT";
+  elements.mqttConnectButton.classList.toggle("secondary", !mqttConnected);
 }
 
 function setupTabs() {
@@ -598,6 +782,10 @@ function setupTabs() {
     try {
       window.localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, tabName);
     } catch {
+    }
+
+    if (tabName === "firmware") {
+      refreshFirmwareInfo(true).catch(handleError);
     }
   };
 
@@ -636,10 +824,58 @@ async function loadStatus() {
   renderStatus(await request("/api/status"));
 }
 
+async function refreshFirmwareInfo(forceRefresh = false) {
+  state.firmwareReleasesLoading = true;
+  if (forceRefresh) {
+    elements.otaStatusLabel.textContent = "Checking releases...";
+    showFirmwareListStatus("Checking available firmware releases...");
+  }
+
+  try {
+    const info = await request(forceRefresh ? "/api/firmware?refresh=1" : "/api/firmware");
+    const currentVersion = info.currentVersion || state.status?.firmware?.version || "-";
+    const latestVersion = info.latestVersion || "No release";
+    state.firmwareReleases = Array.isArray(info.releases) ? info.releases : state.firmwareReleases;
+    state.firmwareLatestVersion = latestVersion;
+    state.firmwareSelectedVersion = info.selectedVersion || state.firmwareSelectedVersion;
+    state.firmwareReleasesLoaded = true;
+
+    elements.firmwareVersionCard.textContent = currentVersion;
+    elements.latestVersion.textContent = latestVersion;
+    elements.otaStatusLabel.textContent = info.updateStatus || "Idle";
+    elements.otaStatus.textContent = JSON.stringify(info, null, 2);
+
+    const progress = Number(info.updateProgress || 0);
+    const bytes = Number(info.updateBytes || 0);
+    const totalBytes = Number(info.updateTotalBytes || 0);
+    const phase = info.updatePhase || "";
+    elements.otaProgressFill.style.width = `${Math.max(0, Math.min(100, progress))}%`;
+    if (info.updateBusy || progress > 0) {
+      const byteLabel = totalBytes > 0 ? ` (${bytes}/${totalBytes} bytes)` : "";
+      elements.otaProgressLabel.textContent = `${phase || "Update"} ${progress}%${byteLabel}`;
+    }
+
+    if (info.error && !state.firmwareReleases.length) {
+      showFirmwareListStatus(info.error, true);
+    } else {
+      renderFirmwareList(state.firmwareReleases, currentVersion, state.firmwareLatestVersion, state.firmwareSelectedVersion);
+    }
+  } finally {
+    state.firmwareReleasesLoading = false;
+  }
+}
+
 function stopFirmwareProgressPolling() {
   if (state.firmwareProgressPollTimer) {
     window.clearInterval(state.firmwareProgressPollTimer);
     state.firmwareProgressPollTimer = null;
+  }
+}
+
+function stopWifiScanPolling() {
+  if (state.wifiScanPollTimer) {
+    window.clearTimeout(state.wifiScanPollTimer);
+    state.wifiScanPollTimer = null;
   }
 }
 
@@ -663,6 +899,9 @@ function startFirmwareProgressPolling() {
 
 async function scanWifiNetworks() {
   const button = elements.scanWifiButton;
+  const requestId = state.wifiScanRequestId + 1;
+  state.wifiScanRequestId = requestId;
+  stopWifiScanPolling();
   button.disabled = true;
   setScanStatus("Searching...");
   resetWifiNetworkList("Searching for networks...");
@@ -675,19 +914,27 @@ async function scanWifiNetworks() {
       setScanStatus("Wi-Fi scan could not start", true);
       return;
     }
-    if (state.wifiScanPollTimer) {
-      window.clearInterval(state.wifiScanPollTimer);
-    }
-    state.wifiScanPollTimer = window.setInterval(async () => {
+
+    const pollScan = async () => {
       try {
-        const result = await request("/api/wifi/scan");
-        if (result.scanning) {
-          setScanStatus("Searching...");
+        if (state.wifiScanRequestId !== requestId) {
           return;
         }
 
-        window.clearInterval(state.wifiScanPollTimer);
-        state.wifiScanPollTimer = null;
+        const result = await request("/api/wifi/scan");
+        if (state.wifiScanRequestId !== requestId) {
+          return;
+        }
+
+        if (result.scanning) {
+          setScanStatus("Searching...");
+          state.wifiScanPollTimer = window.setTimeout(() => {
+            pollScan().catch(handleError);
+          }, 800);
+          return;
+        }
+
+        stopWifiScanPolling();
         button.disabled = false;
 
         if (result.failed) {
@@ -700,12 +947,16 @@ async function scanWifiNetworks() {
         renderWifiNetworks(networks);
         setScanStatus(networks.length ? `Found ${networks.length} network(s)` : "No networks found");
       } catch (error) {
-        window.clearInterval(state.wifiScanPollTimer);
-        state.wifiScanPollTimer = null;
+        if (state.wifiScanRequestId !== requestId) {
+          return;
+        }
+        stopWifiScanPolling();
         button.disabled = false;
         setScanStatus(error.message, true);
       }
-    }, 800);
+    };
+
+    await pollScan();
   } catch (error) {
     resetWifiNetworkList("Wi-Fi scan failed");
     setScanStatus(error.message, true);
@@ -751,6 +1002,41 @@ async function connectWifi() {
 }
 
 async function connectMqtt() {
+  const mqttConnected = Boolean(state.status?.network?.mqttConnected);
+  if (mqttConnected) {
+    state.mqttConnectInProgress = true;
+    state.mqttActionInProgress = "disconnect";
+    elements.mqttConnectButton.disabled = true;
+    setMqttConnectStatus("Disconnecting from MQTT broker...");
+
+    try {
+      await request("/api/mqtt", {
+        method: "POST",
+        body: JSON.stringify({ action: "disconnect" }),
+      });
+
+      const disconnected = await pollStatusUntil(
+        (status) => !Boolean(status?.network?.mqttConnected),
+        8,
+        400,
+      );
+
+      if (disconnected) {
+        setMqttConnectStatus("MQTT disconnected.");
+        setMessage("MQTT disconnected");
+      } else {
+        setMqttConnectStatus("MQTT disconnect requested.");
+        setMessage("MQTT disconnect requested");
+      }
+    } finally {
+      state.mqttConnectInProgress = false;
+      state.mqttActionInProgress = "";
+      elements.mqttConnectButton.disabled = false;
+      updateMqttActionButton();
+    }
+    return;
+  }
+
   const host = String(namedField("mqtt.host")?.value || "").trim();
   if (!host) {
     setMqttConnectStatus("Enter an MQTT host first", true);
@@ -758,6 +1044,7 @@ async function connectMqtt() {
   }
 
   state.mqttConnectInProgress = true;
+  state.mqttActionInProgress = "connect";
   elements.mqttConnectButton.disabled = true;
   setMqttConnectStatus(`Saving MQTT settings for ${host}...`);
 
@@ -765,8 +1052,13 @@ async function connectMqtt() {
     await saveSettings({ silent: true });
     setMessage(`MQTT settings saved for ${host}`);
 
+    await request("/api/mqtt", {
+      method: "POST",
+      body: JSON.stringify({ action: "connect" }),
+    });
+
     if (!state.status?.network?.wifiConnected) {
-      setMqttConnectStatus("MQTT settings saved. Waiting for Wi-Fi first.");
+      setMqttConnectStatus("MQTT connect requested. Waiting for Wi-Fi first.");
       return;
     }
 
@@ -786,7 +1078,9 @@ async function connectMqtt() {
     }
   } finally {
     state.mqttConnectInProgress = false;
+    state.mqttActionInProgress = "";
     elements.mqttConnectButton.disabled = false;
+    updateMqttActionButton();
   }
 }
 
@@ -874,14 +1168,26 @@ async function stopPlayback() {
   await loadStatus();
 }
 
-async function checkOta(apply) {
+async function checkOta() {
+  await refreshFirmwareInfo(true);
+  setMessage("Firmware releases refreshed");
+}
+
+async function installSelectedFirmware() {
+  const version = selectedFirmwareVersion();
+  if (!version) {
+    setMessage("Select a firmware release first.", true);
+    return;
+  }
+
+  state.awaitingFirmwareReboot = true;
   startFirmwareProgressPolling();
-  const result = await request("/api/ota/check", {
+  const result = await request("/api/firmware/update", {
     method: "POST",
-    body: JSON.stringify({ apply }),
+    body: JSON.stringify({ version }),
   });
   elements.otaStatus.textContent = JSON.stringify(result, null, 2);
-  setMessage(apply ? "OTA install requested" : "OTA check requested");
+  setMessage(result.message || `Update queued for ${version}`);
   await loadStatus();
 }
 
@@ -939,11 +1245,13 @@ async function uploadLocalFirmware() {
       }
 
       if (xhr.status >= 200 && xhr.status < 300) {
+        state.awaitingFirmwareReboot = true;
         setMessage(payload.message || "Local firmware uploaded.");
         try {
           await loadStatus();
         } catch {
         }
+        beginFirmwareReconnectReload();
         resolve();
         return;
       }
@@ -978,17 +1286,14 @@ async function copyCurrentUrl() {
   toast("Copied current URL");
 }
 
-document.getElementById("reloadButton").addEventListener("click", () => Promise.all([loadStatus(), loadSettings()]));
 elements.scanWifiButton.addEventListener("click", () => {
-  const ssid = String(namedField("wifi.ssid")?.value || "").trim();
-  const hasSelectedNetwork = Boolean(String(elements.wifiNetworkList?.value || "").trim());
-  const shouldConnect = ssid.length > 0 && (hasSelectedNetwork || !state.status?.network?.wifiConnected);
+  const shouldConnect = state.wifiSelectionPending;
   return (shouldConnect ? connectWifi() : scanWifiNetworks()).catch(handleError);
 });
 document.getElementById("stopButton").addEventListener("click", () => stopPlayback().catch(handleError));
 document.getElementById("copyUrlButton").addEventListener("click", () => copyCurrentUrl().catch(handleError));
-document.getElementById("checkOtaButton").addEventListener("click", () => checkOta(false).catch(handleError));
-document.getElementById("applyOtaButton").addEventListener("click", () => checkOta(true).catch(handleError));
+document.getElementById("checkOtaButton").addEventListener("click", () => checkOta().catch(handleError));
+document.getElementById("applyOtaButton").addEventListener("click", () => installSelectedFirmware().catch(handleError));
 elements.mqttConnectButton?.addEventListener("click", () => connectMqtt().catch(handleError));
 document.getElementById("uploadFirmwareButton").addEventListener("click", () => {
   elements.localFirmwareFile.value = "";
@@ -1012,12 +1317,14 @@ elements.localFirmwareFile?.addEventListener("change", () => {
 elements.playForm.addEventListener("submit", (event) => submitPlay(event).catch(handleError));
 elements.wifiNetworkList.addEventListener("change", (event) => {
   if (!event.target.value) {
+    state.wifiSelectionPending = false;
     updateWifiActionButton();
     return;
   }
   const field = namedField("wifi.ssid");
   if (field) {
     field.value = event.target.value;
+    state.wifiSelectionPending = true;
     setScanStatus(`Selected ${event.target.value}. Enter the password, then connect.`);
     updateWifiActionButton();
   }
@@ -1071,6 +1378,14 @@ for (const field of elements.settingsForm.elements) {
       updateDerivedBatteryCalibration();
     }
     if (event.target.name === "wifi.ssid" || event.target.name === "wifi.password") {
+      if (event.target.name === "wifi.ssid" && elements.wifiNetworkList) {
+        const selectedNetwork = String(elements.wifiNetworkList.value || "").trim();
+        const typedSsid = String(event.target.value || "").trim();
+        if (!selectedNetwork || typedSsid !== selectedNetwork) {
+          elements.wifiNetworkList.value = "";
+          state.wifiSelectionPending = false;
+        }
+      }
       updateWifiActionButton();
       if (!state.wifiConnectInProgress) {
         setScanStatus("");

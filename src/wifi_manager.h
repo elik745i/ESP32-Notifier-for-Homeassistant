@@ -42,10 +42,12 @@ class WiFiManager {
     SettingsBundle settings_;
     AppState* appState_ = nullptr;
     DNSServer dnsServer_;
+    bool initialized_ = false;
     bool dnsStarted_ = false;
     bool apMode_ = false;
     bool stationAttemptActive_ = false;
     bool hadConnection_ = false;
+    bool lastScanCompleted_ = false;
     unsigned long connectAttemptStartedAt_ = 0;
     unsigned long lastConnectAttemptAt_ = 0;
     unsigned long lastScanStartedAt_ = 0;

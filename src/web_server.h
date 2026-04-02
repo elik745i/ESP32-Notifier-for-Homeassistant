@@ -18,6 +18,7 @@ class WebServerManager {
     using VolumeHandler = std::function<void(uint8_t)>;
     using SimpleHandler = std::function<void(void)>;
     using OtaHandler = std::function<bool(bool)>;
+    using MqttHandler = std::function<bool(bool, String&)>;
 
     WebServerManager();
     void begin(
@@ -31,6 +32,7 @@ class WebServerManager {
         StopHandler stopHandler,
         VolumeHandler volumeHandler,
         OtaHandler otaHandler,
+        MqttHandler mqttHandler,
         SimpleHandler rebootHandler,
         SimpleHandler factoryResetHandler);
 
@@ -46,6 +48,7 @@ class WebServerManager {
     StopHandler stopHandler_;
     VolumeHandler volumeHandler_;
     OtaHandler otaHandler_;
+    MqttHandler mqttHandler_;
     SimpleHandler rebootHandler_;
     SimpleHandler factoryResetHandler_;
 

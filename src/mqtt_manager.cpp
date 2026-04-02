@@ -10,18 +10,13 @@ String payloadToString(char* payload, size_t len) {
     return value;
 }
 
-String normalizeMediaType(String mediaType) {
-    mediaType.toLowerCase();
-    if (mediaType.indexOf("tts") >= 0 || mediaType.indexOf("announce") >= 0) {
-        return "tts";
-    }
-    if (mediaType.indexOf("stream") >= 0 || mediaType.indexOf("music") >= 0 || mediaType.indexOf("audio") >= 0 || mediaType.indexOf("url") >= 0) {
-        return "stream";
-    }
-    if (mediaType == "media") {
-        return "media";
-    }
-    return mediaType.isEmpty() ? String("stream") : mediaType;
+bool mqttReconnectRequired(const SettingsBundle& current, const SettingsBundle& next) {
+    return current.mqtt.host != next.mqtt.host ||
+           current.mqtt.port != next.mqtt.port ||
+           current.mqtt.username != next.mqtt.username ||
+           current.mqtt.password != next.mqtt.password ||
+           current.mqtt.clientId != next.mqtt.clientId ||
+           current.device.deviceName != next.device.deviceName;
 }
 }  // namespace
 
@@ -39,19 +34,40 @@ void MqttManager::begin(const SettingsBundle& settings, AppState& appState, WiFi
 }
 
 void MqttManager::applySettings(const SettingsBundle& settings) {
+    const bool needsReconfigure = !configured_ || mqttReconnectRequired(settings_, settings) || !client_.connected();
     settings_ = settings;
-    configureClient();
+    if (needsReconfigure) {
+        configureClient();
+        configured_ = true;
+        return;
+    }
+
+    if (client_.connected()) {
+        publishDiscovery();
+        publishState();
+    }
 }
 
 void MqttManager::configureClient() {
-    client_.disconnect();
+    client_.disconnect(true);
     client_.setServer(settings_.mqtt.host.c_str(), settings_.mqtt.port);
     client_.setClientId(settings_.mqtt.clientId.isEmpty() ? settings_.device.deviceName.c_str() : settings_.mqtt.clientId.c_str());
-    if (!settings_.mqtt.username.isEmpty()) {
-        client_.setCredentials(settings_.mqtt.username.c_str(), settings_.mqtt.password.c_str());
-    }
+    client_.setCredentials(
+        settings_.mqtt.username.isEmpty() ? nullptr : settings_.mqtt.username.c_str(),
+        settings_.mqtt.username.isEmpty() ? nullptr : settings_.mqtt.password.c_str());
     client_.setKeepAlive(30);
     client_.setWill(HaBridge::availabilityTopic(settings_).c_str(), 1, true, "offline");
+    lastConnectAttemptAt_ = 0;
+
+    if (!connectionEnabled_) {
+        return;
+    }
+
+    if (!settings_.mqtt.host.isEmpty() && wifiManager_ != nullptr && wifiManager_->isConnected()) {
+        Serial.printf("[mqtt] immediate reconnect to %s:%u\n", settings_.mqtt.host.c_str(), settings_.mqtt.port);
+        lastConnectAttemptAt_ = millis();
+        client_.connect();
+    }
 }
 
 void MqttManager::loop() {
@@ -62,24 +78,24 @@ void MqttManager::loop() {
 }
 
 void MqttManager::connectIfNeeded() {
-    if (settings_.mqtt.host.isEmpty() || wifiManager_ == nullptr || !wifiManager_->isConnected() || client_.connected()) {
+    if (!connectionEnabled_ || settings_.mqtt.host.isEmpty() || wifiManager_ == nullptr || !wifiManager_->isConnected() || client_.connected()) {
         return;
     }
     if (millis() - lastConnectAttemptAt_ < 5000UL) {
         return;
     }
+    Serial.printf("[mqtt] connect attempt to %s:%u\n", settings_.mqtt.host.c_str(), settings_.mqtt.port);
     lastConnectAttemptAt_ = millis();
     client_.connect();
 }
 
 void MqttManager::handleConnected(bool sessionPresent) {
     (void)sessionPresent;
+    Serial.printf("[mqtt] connected host=%s port=%u\n", settings_.mqtt.host.c_str(), settings_.mqtt.port);
     if (appState_ != nullptr) {
         appState_->setMqttConnected(true);
     }
     client_.publish(HaBridge::availabilityTopic(settings_).c_str(), 1, true, "online");
-    client_.subscribe(HaBridge::playerCommandTopic(settings_).c_str(), 1);
-    client_.subscribe(HaBridge::playerPlayMediaTopic(settings_).c_str(), 1);
     client_.subscribe(HaBridge::commandTopic(settings_, "play").c_str(), 1);
     client_.subscribe(HaBridge::commandTopic(settings_, "tts").c_str(), 1);
     client_.subscribe(HaBridge::commandTopic(settings_, "stop").c_str(), 1);
@@ -89,6 +105,7 @@ void MqttManager::handleConnected(bool sessionPresent) {
 }
 
 void MqttManager::handleDisconnected(AsyncMqttClientDisconnectReason reason) {
+    Serial.printf("[mqtt] disconnected reason=%d\n", static_cast<int>(reason));
     (void)reason;
     if (appState_ != nullptr) {
         appState_->setMqttConnected(false);
@@ -104,49 +121,6 @@ void MqttManager::handleMessage(char* topic, char* payload, AsyncMqttClientMessa
     const String topicValue = topic;
     const String payloadValue = payloadToString(payload, len);
     PlaybackCommand command;
-    if (topicValue == HaBridge::playerCommandTopic(settings_)) {
-        String action = payloadValue;
-        action.trim();
-        action.toUpperCase();
-        if (action == "STOP") {
-            command.action = "stop";
-            commandHandler_(command);
-            return;
-        }
-        if (action == "PLAY") {
-            const AppStateSnapshot snapshot = appState_ != nullptr ? appState_->snapshot() : AppStateSnapshot();
-            if (snapshot.playback.url.isEmpty()) {
-                return;
-            }
-            command.action = "play";
-            command.url = snapshot.playback.url;
-            command.label = snapshot.playback.title;
-            command.mediaType = snapshot.playback.type.isEmpty() ? String("stream") : snapshot.playback.type;
-            commandHandler_(command);
-            return;
-        }
-    }
-
-    if (topicValue == HaBridge::playerPlayMediaTopic(settings_)) {
-        command.action = "play";
-        if (payloadValue.startsWith("{")) {
-            JsonDocument doc;
-            if (deserializeJson(doc, payloadValue) == DeserializationError::Ok) {
-                command.url = String(static_cast<const char*>(doc["url"] | doc["media_id"] | ""));
-                command.label = String(static_cast<const char*>(doc["label"] | doc["title"] | doc["media_id"] | ""));
-                command.mediaType = normalizeMediaType(String(static_cast<const char*>(doc["type"] | doc["media_type"] | "stream")));
-            }
-        } else {
-            command.url = payloadValue;
-            command.label = payloadValue;
-            command.mediaType = "stream";
-        }
-        if (!command.url.isEmpty()) {
-            commandHandler_(command);
-        }
-        return;
-    }
-
     if (topicValue == HaBridge::commandTopic(settings_, "stop")) {
         command.action = "stop";
         commandHandler_(command);
@@ -173,7 +147,7 @@ void MqttManager::handleMessage(char* topic, char* payload, AsyncMqttClientMessa
         if (deserializeJson(doc, payloadValue) == DeserializationError::Ok) {
             command.url = String(static_cast<const char*>(doc["url"] | ""));
             command.label = String(static_cast<const char*>(doc["label"] | ""));
-            command.mediaType = normalizeMediaType(String(static_cast<const char*>(doc["type"] | (command.action == "tts" ? "tts" : "stream"))));
+            command.mediaType = String(static_cast<const char*>(doc["type"] | (command.action == "tts" ? "tts" : "stream")));
         }
     } else {
         command.url = payloadValue;
@@ -222,7 +196,7 @@ void MqttManager::publishState() {
     battery["rawAdc"] = snapshot.battery.rawAdc;
     publishJson(HaBridge::batteryStateTopic(settings_), battery, true);
 
-    client_.publish(HaBridge::playerVolumeStateTopic(settings_).c_str(), 1, true, String(snapshot.playback.volumePercent).c_str());
+    client_.publish((settings_.mqtt.baseTopic + "/state/volume").c_str(), 1, true, String(snapshot.playback.volumePercent).c_str());
 }
 
 void MqttManager::publishBattery(float voltage, float rawAdcVoltage, uint16_t rawAdc) {
@@ -242,7 +216,7 @@ void MqttManager::publishDiscovery() {
     }
     client_.publish(
         HaBridge::discoveryTopic(settings_, "sensor", "battery_voltage").c_str(), 1, true,
-        HaBridge::discoveryPayloadSensor(settings_, "battery_voltage", "Battery Voltage", HaBridge::batteryStateTopic(settings_).c_str(), "{{ value_json.voltage }}", "V", "voltage", "measurement", "mdi:battery").c_str());
+        HaBridge::discoveryPayloadSensor(settings_, "battery_voltage", "Battery Voltage", HaBridge::batteryStateTopic(settings_).c_str(), "{{ value_json.voltage }}", "V", "voltage", "measurement", "mdi:battery", 2).c_str());
     client_.publish(
         HaBridge::discoveryTopic(settings_, "sensor", "wifi_rssi").c_str(), 1, true,
         HaBridge::discoveryPayloadSensor(settings_, "wifi_rssi", "Wi-Fi RSSI", HaBridge::networkStateTopic(settings_).c_str(), "{{ value_json.wifiRssi }}", "dBm", "signal_strength", "measurement", "mdi:wifi").c_str());
@@ -250,11 +224,8 @@ void MqttManager::publishDiscovery() {
         HaBridge::discoveryTopic(settings_, "sensor", "playback_state").c_str(), 1, true,
         HaBridge::discoveryPayloadSensor(settings_, "playback_state", "Playback State", HaBridge::playbackStateTopic(settings_).c_str(), "{{ value_json.state }}", nullptr, nullptr, nullptr, "mdi:speaker-wireless").c_str());
     client_.publish(
-        HaBridge::discoveryTopic(settings_, "media_player", "notifier").c_str(), 1, true,
-        HaBridge::discoveryPayloadMediaPlayer(settings_, "notifier", settings_.device.friendlyName.c_str(), "mdi:speaker-wireless").c_str());
-    client_.publish(
         HaBridge::discoveryTopic(settings_, "number", "volume").c_str(), 1, true,
-        HaBridge::discoveryPayloadNumber(settings_, "volume", "Notifier Volume", HaBridge::playerVolumeStateTopic(settings_).c_str(), HaBridge::commandTopic(settings_, "volume").c_str(), 0, 100, 1, "%", "mdi:volume-high").c_str());
+        HaBridge::discoveryPayloadNumber(settings_, "volume", "Notifier Volume", (settings_.mqtt.baseTopic + "/state/volume").c_str(), HaBridge::commandTopic(settings_, "volume").c_str(), 0, 100, 1, "%", "mdi:volume-high").c_str());
     client_.publish(
         HaBridge::discoveryTopic(settings_, "button", "stop").c_str(), 1, true,
         HaBridge::discoveryPayloadButton(settings_, "stop", "Stop Playback", HaBridge::commandTopic(settings_, "stop").c_str(), "stop", "mdi:stop").c_str());
@@ -265,4 +236,32 @@ void MqttManager::publishDiscovery() {
 
 bool MqttManager::isConnected() const {
     return client_.connected();
+}
+
+bool MqttManager::requestConnect(String& error) {
+    if (settings_.mqtt.host.isEmpty()) {
+        error = "Enter an MQTT host first.";
+        return false;
+    }
+
+    connectionEnabled_ = true;
+    if (client_.connected()) {
+        publishDiscovery();
+        publishState();
+        return true;
+    }
+
+    configureClient();
+    return true;
+}
+
+bool MqttManager::requestDisconnect(String& error) {
+    error = "";
+    connectionEnabled_ = false;
+    lastConnectAttemptAt_ = millis();
+    client_.disconnect(true);
+    if (appState_ != nullptr) {
+        appState_->setMqttConnected(false);
+    }
+    return true;
 }

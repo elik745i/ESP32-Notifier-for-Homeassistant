@@ -111,7 +111,8 @@ class AudioPlayerStub {
         publish();
     }
 
-        uint8_t volumePercent() const { return volume_; }
+    uint8_t volumePercent() const { return volume_; }
+    String currentState() const { return state_; }
 
     private:
     void publish() {
@@ -172,6 +173,15 @@ bool previousMqttConnected = false;
 String previousPlaybackState = "idle";
 bool transitionStateInitialized = false;
 
+bool isBatterySamplingAllowed() {
+    if (audioPlayer == nullptr) {
+        return true;
+    }
+
+    const String audioState = audioPlayer->currentState();
+    return audioState != "playing" && audioState != "buffering";
+}
+
 const char* resetReasonToString(esp_reset_reason_t reason) {
     switch (reason) {
         case ESP_RST_UNKNOWN:
@@ -209,6 +219,13 @@ void logBootStage(const char* stage) {
 void scheduleReboot(uint32_t delayMs) {
     rebootRequested = true;
     rebootAt = millis() + delayMs;
+}
+
+void pumpOtaDisplayProgress() {
+    if (appState == nullptr || displayManager == nullptr) {
+        return;
+    }
+    displayManager->loop(appState->snapshot());
 }
 
 bool initializeRuntimeObjects() {
@@ -399,6 +416,7 @@ void setup() {
 
     logBootStage("ota begin");
     otaManager->begin(*settings, *appState);
+    otaManager->setProgressCallback(pumpOtaDisplayProgress);
 
     logBootStage("mqtt begin");
     mqttManager->begin(*settings, *appState, *wifiManager, handleMqttCommand);
@@ -421,6 +439,9 @@ void setup() {
             deferredActions->volumePending = true;
         },
         [](bool apply) { return otaManager->triggerCheck(apply); },
+        [](bool connect, String& error) {
+            return connect ? mqttManager->requestConnect(error) : mqttManager->requestDisconnect(error);
+        },
         []() { scheduleReboot(500); },
         []() {
             factoryResetRequested = true;
@@ -476,7 +497,7 @@ void loop() {
     processDeferredActions();
     wifiManager->loop();
     audioPlayer->loop();
-    const bool batteryUpdated = batteryMonitor->loop();
+    const bool batteryUpdated = batteryMonitor->loop(isBatterySamplingAllowed());
     otaManager->loop();
     mqttManager->loop();
 

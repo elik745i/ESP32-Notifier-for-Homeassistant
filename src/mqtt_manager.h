@@ -21,6 +21,8 @@ class MqttManager {
     void publishBattery(float voltage, float rawAdcVoltage, uint16_t rawAdc);
     void publishDiscovery();
     bool isConnected() const;
+    bool requestConnect(String& error);
+    bool requestDisconnect(String& error);
 
   private:
     AsyncMqttClient client_;
@@ -28,6 +30,8 @@ class MqttManager {
     AppState* appState_ = nullptr;
     WiFiManager* wifiManager_ = nullptr;
     CommandHandler commandHandler_;
+    bool configured_ = false;
+    bool connectionEnabled_ = true;
     unsigned long lastConnectAttemptAt_ = 0;
     unsigned long lastStatePublishAt_ = 0;
 

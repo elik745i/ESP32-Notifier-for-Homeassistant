@@ -120,7 +120,7 @@
               </label>
             </div>
             <div class="inline-actions">
-              <button id="scanWifiButton" type="button" class="secondary">Search Wi-Fi</button>
+              <button id="scanWifiButton" type="button" class="secondary">Scan Network</button>
               <span id="scanStatus" class="scan-status"></span>
             </div>
             <label>Found Networks
@@ -351,12 +351,12 @@
             </div>
           </div>
           <div class="actions">
-            <button id="checkOtaButton" type="button">Check OTA</button>
-            <button id="applyOtaButton" type="button" class="secondary">Install OTA</button>
+            <button id="checkOtaButton" type="button">Check Releases</button>
+            <button id="applyOtaButton" type="button" class="secondary">Install Selected</button>
             <button id="uploadFirmwareButton" type="button" class="secondary">Upload Local Firmware</button>
-            <button id="reloadButton" type="button" class="secondary">Reload</button>
           </div>
           <div class="actions actions-inline-text">
+            <span id="firmwareSelectionLabel" class="scan-status">No firmware selected</span>
             <span id="localFirmwareLabel" class="scan-status">No local firmware selected</span>
           </div>
           <input id="localFirmwareFile" type="file" accept=".bin,application/octet-stream" hidden>
@@ -369,6 +369,7 @@
             <div class="progress-bar"><div id="otaProgressFill" class="progress-fill"></div></div>
             <div id="otaProgressLabel" class="progress-label">Idle</div>
           </div>
+          <div id="firmwareList" class="firmware-list"></div>
           <pre id="otaStatus" class="log-box">Waiting for status...</pre>
           <div id="message"></div>
         </div>

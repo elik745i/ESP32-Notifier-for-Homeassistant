@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <vector>
 
 #include "app_state.h"
 #include "settings_schema.h"
@@ -10,6 +11,7 @@ class OtaManager {
   public:
     void begin(const SettingsBundle& settings, AppState& appState);
     void applySettings(const SettingsBundle& settings);
+    void setProgressCallback(void (*callback)());
     void loop();
     bool triggerCheck(bool applyAfterCheck);
     bool beginLocalUpload(const String& filename, size_t totalSize, String& error);
@@ -17,6 +19,8 @@ class OtaManager {
     bool finishLocalUpload(String& error);
     void abortLocalUpload(const String& error);
     void appendStatusJson(JsonObject root) const;
+    void appendFirmwareInfoJson(JsonObject root, bool refresh, String& error);
+    bool triggerInstallVersion(const String& version, String& error);
 
   private:
     struct CheckResult {
@@ -29,10 +33,23 @@ class OtaManager {
         String message;
     };
 
+      struct ReleaseInfo {
+        String tag;
+        String name;
+        String publishedAt;
+        String assetUrl;
+        String assetName;
+        bool prerelease = false;
+        bool isCurrent = false;
+        bool isLatest = false;
+        bool isNew = false;
+      };
+
     SettingsBundle settings_;
     AppState* appState_ = nullptr;
     volatile bool pendingCheck_ = false;
     volatile bool pendingApply_ = false;
+      String pendingInstallVersion_;
     bool busy_ = false;
     String lastMessage_ = "idle";
     String latestVersion_;
@@ -47,9 +64,15 @@ class OtaManager {
     bool localUploadOk_ = false;
     bool rebootPending_ = false;
     unsigned long rebootAtMs_ = 0;
+    std::vector<ReleaseInfo> releaseCache_;
+    unsigned long releasesFetchedAtMs_ = 0;
+    void (*progressCallback_)() = nullptr;
 
     void runTask(bool applyAfterCheck);
+    void runVersionTask(const String& version);
     CheckResult checkNow();
+    bool fetchAvailableReleases(bool refresh, String& error);
+    bool resolveVersionResult(const String& version, CheckResult& result, String& error);
     bool installNow(const CheckResult& result, String& message);
     int compareVersions(const String& left, const String& right) const;
     String normalizeVersion(const String& value) const;
@@ -57,4 +80,5 @@ class OtaManager {
     void resetProgress();
     void scheduleReboot(unsigned long delayMs);
     void syncAppState(const String& lastResult, const String& lastError = "");
+    void pumpProgressCallback();
 };

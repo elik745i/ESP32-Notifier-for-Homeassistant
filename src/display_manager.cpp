@@ -22,6 +22,14 @@ uint8_t DisplayManager::rotationIndex() const {
     }
 }
 
+int16_t DisplayManager::topDividerY(int16_t displayHeight) const {
+    return min<int16_t>(11, displayHeight / 4);
+}
+
+int16_t DisplayManager::bottomDividerY(int16_t displayHeight) const {
+    return max<int16_t>(displayHeight - 12, displayHeight - 12);
+}
+
 void DisplayManager::begin(const OledSettings& settings) {
     applySettings(settings);
 }
@@ -116,6 +124,11 @@ String DisplayManager::centerTextForState(const AppStateSnapshot& state) const {
 void DisplayManager::drawOtaProgress(Adafruit_GFX& display, const AppStateSnapshot& state) {
     const int16_t displayWidth = display.width();
     const int16_t displayHeight = display.height();
+    const int16_t upperDivider = topDividerY(displayHeight);
+    const int16_t lowerDivider = bottomDividerY(displayHeight);
+    const int16_t centerTop = upperDivider + 6;
+    const int16_t centerBottom = lowerDivider - 5;
+    const int16_t centerHeight = max<int16_t>(18, centerBottom - centerTop);
     const uint8_t progress = state.ota.progressPercent;
     String label = state.ota.phase.isEmpty() ? String("Updating") : state.ota.phase;
     label += " ";
@@ -123,12 +136,13 @@ void DisplayManager::drawOtaProgress(Adafruit_GFX& display, const AppStateSnapsh
     label += "%";
 
     display.setTextSize(1);
-    drawWrappedLine(display, label, max<int16_t>(14, (displayHeight / 2) - 14), charsForWidth(displayWidth, 1), false);
+    const int16_t labelY = centerTop;
+    drawWrappedLine(display, label, labelY, charsForWidth(displayWidth, 1), false);
 
     const int16_t barX = 8;
-    const int16_t barY = max<int16_t>(24, (displayHeight / 2) - 4);
-    const int16_t barWidth = displayWidth - 16;
     const int16_t barHeight = 12;
+    const int16_t barY = min<int16_t>(centerBottom - barHeight, labelY + 12);
+    const int16_t barWidth = displayWidth - 16;
     display.drawRect(barX, barY, barWidth, barHeight, SSD1306_WHITE);
     const int16_t innerWidth = max<int16_t>(0, barWidth - 2);
     const int16_t fillWidth = (innerWidth * progress) / 100;
@@ -192,14 +206,14 @@ void DisplayManager::loop(const AppStateSnapshot& state) {
     const uint8_t topChars = charsForWidth(displayWidth, 1);
     const uint8_t centerChars = charsForWidth(displayWidth, 2);
     const uint8_t bottomChars = charsForWidth(displayWidth, 1);
-    const int16_t topDividerY = min<int16_t>(11, displayHeight / 4);
-    const int16_t bottomDividerY = max<int16_t>(displayHeight - 12, displayHeight - 12);
-    const int16_t centerY = max<int16_t>(topDividerY + 12, (displayHeight / 2) - 8);
+    const int16_t upperDivider = topDividerY(displayHeight);
+    const int16_t lowerDivider = bottomDividerY(displayHeight);
+    const int16_t centerY = max<int16_t>(upperDivider + 12, (displayHeight / 2) - 8);
     clearDisplay();
     display->setTextColor(SSD1306_WHITE);
     display->setTextSize(1);
     drawWrappedLine(*display, top, 2, topChars, false);
-    display->drawLine(0, topDividerY, displayWidth - 1, topDividerY, SSD1306_WHITE);
+    display->drawLine(0, upperDivider, displayWidth - 1, upperDivider, SSD1306_WHITE);
     if (state.ota.busy) {
         drawOtaProgress(*display, state);
     } else {
@@ -207,7 +221,7 @@ void DisplayManager::loop(const AppStateSnapshot& state) {
         drawWrappedLine(*display, center, centerY, centerChars, true);
     }
     display->setTextSize(1);
-    display->drawLine(0, bottomDividerY, displayWidth - 1, bottomDividerY, SSD1306_WHITE);
+    display->drawLine(0, lowerDivider, displayWidth - 1, lowerDivider, SSD1306_WHITE);
     drawWrappedLine(*display, bottom, displayHeight - 9, bottomChars, false);
     flushDisplay();
 }

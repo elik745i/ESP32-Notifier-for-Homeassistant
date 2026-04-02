@@ -49,6 +49,69 @@ binary_sensor:
     payload_on: online
     payload_off: offline
 
+number:
+  - platform: mqtt
+    name: ESP32 Notifier Volume Raw
+    unique_id: esp32_notifier_volume_raw_package
+    state_topic: esp32_notifier/state/volume
+    command_topic: esp32_notifier/cmd/volume
+    min: 0
+    max: 100
+    step: 1
+    command_template: >-
+      {{ {'volumePercent': value | int } | tojson }}
+
+template:
+  - sensor:
+      - name: ESP32 Notifier Volume Level
+        unique_id: esp32_notifier_volume_level_package
+        state: >-
+          {{ (states('number.esp32_notifier_volume_raw') | float(0) / 100) | round(2) }}
+
+media_player:
+  - platform: universal
+    name: ESP32 Notifier
+    unique_id: esp32_notifier_universal_player
+    device_class: speaker
+    state_template: >-
+      {% set online = is_state('binary_sensor.esp32_notifier_online', 'on') %}
+      {% set playback = states('sensor.esp32_notifier_playback_state') %}
+      {% if not online %}
+        off
+      {% elif playback in ['playing', 'buffering'] %}
+        playing
+      {% elif playback in ['paused'] %}
+        paused
+      {% else %}
+        idle
+      {% endif %}
+    commands:
+      media_stop:
+        action: script.esp32_notifier_stop
+      media_play:
+        action: script.esp32_notifier_play_url
+        data:
+          url: "{{ states('input_text.esp32_notifier_play_url') }}"
+          label: "{{ states('sensor.esp32_notifier_current_title') }}"
+          type: stream
+      play_media:
+        action: script.esp32_notifier_play_url
+        data:
+          url: "{{ media_content_id }}"
+          label: "{{ media_content_id }}"
+          type: >-
+            {% if media_content_type is string and 'tts' in media_content_type | lower %}
+              tts
+            {% else %}
+              stream
+            {% endif %}
+      volume_set:
+        action: script.esp32_notifier_set_volume
+        data:
+          volume: "{{ (volume_level | float(0) * 100) | round(0) | int }}"
+    attributes:
+      volume_level: sensor.esp32_notifier_volume_level
+
 script:
   esp32_notifier_play_url:
     alias: ESP32 Notifier Play URL

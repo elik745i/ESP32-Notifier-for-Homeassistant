@@ -17,7 +17,7 @@ class BatteryMonitor {
   public:
     void begin(const BatterySettings& settings, uint8_t adcPin, AppState& appState);
     void applySettings(const BatterySettings& settings);
-    bool loop();
+    bool loop(bool samplingAllowed = true);
     BatteryReading latest() const;
 
   private:

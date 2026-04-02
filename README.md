@@ -40,9 +40,20 @@ The firmware in this repository documents and supports that direction, while kee
 
 The repository builds successfully with PlatformIO and emits [firmware.bin](.pio/build/esp32_notifier/firmware.bin) locally.
 
-The Home Assistant integration now exposes the notifier through MQTT discovery as a Home Assistant `media_player` and also supports the direct MQTT URL-command path:
+Current firmware version in this repository:
 
-- MQTT `media_player` discovery
+- `v0.1.3`
+
+Recent firmware and web UI updates included in this version:
+
+- firmware tab now auto-checks releases when opened and shows a selectable GitHub release list, including downgrade targets
+- OTA installs now show progress on both the web UI and the physical OLED during app-handled update flows
+- the MQTT tab now exposes an explicit connect or disconnect action instead of only saving settings
+- Wi-Fi scan flow now keeps the correct button state and avoids the earlier false scan-failed result after successful scans
+- Home Assistant battery-voltage discovery now suggests two decimal places for display
+
+The Home Assistant integration supports the direct MQTT URL-command path and includes Home Assistant example configuration for wrapping the notifier as a player entity from HA:
+
 - `play URL`
 - `play TTS URL`
 - `stop`
@@ -55,15 +66,11 @@ The firmware publishes MQTT state for:
 - battery voltage
 - Wi-Fi / network status
 
-Current `media_player` scope:
-
-- Home Assistant can auto-discover the notifier as a player entity
-- Home Assistant can send `play_media`, `stop`, and `volume_set` over MQTT
-- playback state and playback metadata are published back through MQTT
-
 Current limitation:
 
-- if the firmware is built with the diagnostic audio-disable flag enabled, the `media_player` entity will still be discovered but playback actions will not start audio until that build flag is removed
+- current Home Assistant versions do not provide a native MQTT `media_player` platform, so the notifier does not appear as a player entity from MQTT discovery alone
+- use the included Home Assistant package examples to create a wrapper player entity inside Home Assistant
+- if the firmware is built with the diagnostic audio-disable flag enabled, playback actions will not start audio until that build flag is removed
 
 ## Dev Board
 
@@ -91,6 +98,8 @@ Pinout image used for this board:
 ## Hardware Wiring
 
 Known required pins:
+
+These values are the current firmware defaults and can be changed later from the web UI if your hardware wiring differs.
 
 | Function | GPIO |
 |---|---:|
@@ -345,22 +354,29 @@ Volume:
 
 Example HA files are included in [home_assistant](home_assistant).
 
-Reliable current integration path:
+Current integration paths:
 
-1. Use MQTT to publish direct audio URLs to the device.
-2. Use the included scripts and helper entities for play, stop, and volume.
-3. If your TTS engine can expose a direct MP3 or stream URL, publish that URL to `cmd/tts`.
+1. Use MQTT discovery to add the notifier's sensors, number, button, and text entities.
+2. Use the included scripts and helper entities for direct URL play, stop, and volume.
+3. If you want the notifier to appear in Home Assistant's media-player list, create a Home Assistant-side wrapper media player using the included example package.
+4. If your TTS engine can expose a direct MP3 or stream URL, publish that URL to `cmd/tts` or route it through the HA wrapper player.
+
+Current Home Assistant wrapper scope:
+
+- Home Assistant can expose the notifier as a `media_player` by wrapping the MQTT entities and scripts with a `universal` media player.
+- Home Assistant can send `play_media`, `media_stop`, and `volume_set` through that wrapper.
+- Playback state, title, URL, and volume are still published back from the notifier over MQTT.
 
 Important current limitation:
 
-- Home Assistant's native `tts.speak` service targets a `media_player` entity.
-- This firmware does not yet expose a full Home Assistant `media_player` entity with the protocol HA expects.
-- That means `tts.speak` cannot be pointed at this device directly today without an HA-side adapter or future custom integration work.
+- Home Assistant's higher-level `tts.speak` workflows may still depend on the exact `media_content_type` and payload shape your HA version sends.
+- The notifier is most reliable today with direct URL-based playback, whether that URL comes from a script, HA automation, or the HA wrapper `play_media` action.
+- If the firmware is built with `APP_DISABLE_AUDIO=1`, the HA-side wrapper player will exist but playback actions will not produce sound.
 
 Practical TTS options right now:
 
 1. Use a TTS engine or workflow that can produce a directly reachable MP3/HTTP URL.
-2. Publish that URL to `esp32_notifier/cmd/tts`.
+2. Publish that URL to `esp32_notifier/cmd/tts` or pass it via the Home Assistant wrapper player's `play_media` path.
 3. Optionally use the included `script.esp32_notifier_speak_url` helper as the HA wrapper.
 
 Media and radio playback are straightforward today because they are already URL-based.
@@ -385,9 +401,9 @@ Recommended manifest shape:
 
 ```json
 {
-  "version": "v0.1.0",
-  "url": "https://github.com/elik745i/ESP32-Notifier-for-Homeassistant/releases/download/v0.1.0/esp32-notifier-v0.1.0.bin",
-  "asset": "esp32-notifier-v0.1.0.bin",
+  "version": "v0.1.3",
+  "url": "https://github.com/elik745i/ESP32-Notifier-for-Homeassistant/releases/download/v0.1.3/esp32-notifier-v0.1.3.bin",
+  "asset": "esp32-notifier-v0.1.3.bin",
   "sha256": "<optional sha256>",
   "channel": "stable"
 }
@@ -472,16 +488,17 @@ After reset:
 
 - If Wi-Fi never connects, join the fallback AP and open `http://192.168.4.1`.
 - If MQTT state never appears, check base topic, credentials, and broker reachability.
-- If audio playback fails, test with a known good MP3 URL before debugging Home Assistant.
+- If audio playback fails, first confirm the build is not using `APP_DISABLE_AUDIO=1`, then test with a known good MP3 URL before debugging Home Assistant.
 - If HTTPS stream playback fails, check certificate compatibility and the remote server response.
 - If OTA checks fail, prefer a manifest URL first and verify asset naming.
 - If battery voltage is wrong, confirm your divider ratio and calibration multiplier.
 
 ## Known Limitations
 
-- Native Home Assistant `media_player` entity behavior is not fully implemented yet.
-- HA `tts.speak` cannot directly target this firmware today because the firmware currently uses a reliable MQTT URL-command bridge rather than a native HA media player integration.
+- Home Assistant no longer exposes a native MQTT `media_player` integration, so a Home Assistant-side wrapper entity is required if you want this notifier to appear in the media-player list.
+- The notifier is still most robust when driven by direct URL playback over MQTT.
 - Audio playback support is centered on the selected audio library's stream capabilities; some edge-case codecs and playlists may still need tuning.
+- The current published GitHub release was built from the diagnostic configuration with `APP_DISABLE_AUDIO=1`, so that release will not produce sound until an audio-enabled build is published.
 - OTA installs are functional but still conservative: the preferred secure path is a manifest with SHA256.
 - Web auth is basic HTTP auth, not a complete role-based access model.
 - The current firmware focuses on output-only audio. No microphone or duplex audio path is implemented.

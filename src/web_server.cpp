@@ -29,6 +29,7 @@ void WebServerManager::begin(
     StopHandler stopHandler,
     VolumeHandler volumeHandler,
     OtaHandler otaHandler,
+    MqttHandler mqttHandler,
     SimpleHandler rebootHandler,
     SimpleHandler factoryResetHandler) {
     appState_ = &appState;
@@ -41,6 +42,7 @@ void WebServerManager::begin(
     stopHandler_ = stopHandler;
     volumeHandler_ = volumeHandler;
     otaHandler_ = otaHandler;
+    mqttHandler_ = mqttHandler;
     rebootHandler_ = rebootHandler;
     factoryResetHandler_ = factoryResetHandler;
 
@@ -233,6 +235,81 @@ void WebServerManager::registerApiRoutes() {
             JsonDocument response;
             response["ok"] = true;
             otaManager_->appendStatusJson(response["ota"].to<JsonObject>());
+            sendJson(request, response);
+        });
+
+    server_.on(
+        "/api/mqtt", HTTP_POST,
+        [](AsyncWebServerRequest* request) {
+            (void)request;
+        }, nullptr,
+        [this](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+            if (index != 0 || len != total) {
+                return;
+            }
+            if (redirectCaptivePortalIfNeeded(request) || !ensureAuthorized(request)) {
+                return;
+            }
+
+            JsonDocument doc;
+            if (len == 0 || deserializeJson(doc, data, len) != DeserializationError::Ok) {
+                request->send(400, "application/json", "{\"error\":\"invalid json\"}");
+                return;
+            }
+
+            const String action = String(static_cast<const char*>(doc["action"] | ""));
+            const bool connect = action != "disconnect";
+            String error;
+            if (!mqttHandler_ || !mqttHandler_(connect, error)) {
+                request->send(400, "application/json", String("{\"error\":\"") + error + "\"}");
+                return;
+            }
+
+            JsonDocument response;
+            response["ok"] = true;
+            response["action"] = connect ? "connect" : "disconnect";
+            response["message"] = connect ? "MQTT connect requested" : "MQTT disconnect requested";
+            sendJson(request, response);
+        });
+
+    server_.on("/api/firmware", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        if (redirectCaptivePortalIfNeeded(request) || !ensureAuthorized(request)) {
+            return;
+        }
+        JsonDocument response;
+        String error;
+        const bool refresh = request->hasParam("refresh") && request->getParam("refresh")->value() == "1";
+        otaManager_->appendFirmwareInfoJson(response.to<JsonObject>(), refresh, error);
+        sendJson(request, response);
+    });
+
+    server_.on(
+        "/api/firmware/update", HTTP_POST,
+        [](AsyncWebServerRequest* request) {
+            (void)request;
+        }, nullptr,
+        [this](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+            if (index != 0 || len != total) {
+                return;
+            }
+            if (redirectCaptivePortalIfNeeded(request) || !ensureAuthorized(request)) {
+                return;
+            }
+            JsonDocument doc;
+            if (deserializeJson(doc, data, len) != DeserializationError::Ok) {
+                request->send(400, "application/json", "{\"error\":\"invalid json\"}");
+                return;
+            }
+            const String version = String(static_cast<const char*>(doc["version"] | ""));
+            String error;
+            if (!otaManager_->triggerInstallVersion(version, error)) {
+                request->send(409, "application/json", String("{\"error\":\"") + error + "\"}");
+                return;
+            }
+
+            JsonDocument response;
+            response["ok"] = true;
+            response["message"] = String("Update queued for ") + version;
             sendJson(request, response);
         });
 
