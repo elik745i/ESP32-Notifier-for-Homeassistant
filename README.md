@@ -402,6 +402,7 @@ Important current limitation:
 - Because Home Assistant MQTT discovery does not natively create a `media_player` for this device, the wrapper package is still required for the notifier to appear in the media-player list.
 - The notifier is most reliable today with direct URL-based playback, whether that URL comes from a script, HA automation, or the HA wrapper `play_media` action.
 - Source selection in Home Assistant is implemented as named URL presets plus a `Custom URL` fallback, not as a browsable streaming catalog.
+- The Home Assistant Media dashboard target picker and full built-in media-browser flow are not fully provided by this YAML wrapper alone; matching that exact behavior requires a native/custom Home Assistant media player integration that resolves `media-source://...` items into playable URLs before forwarding them to the notifier.
 - For TTS, the best path is still a directly reachable audio URL. If Home Assistant passes `announce: true`, the wrapper/firmware path now marks the playback as `tts`.
 - If the firmware is built with `APP_DISABLE_AUDIO=1`, the HA-side wrapper player will exist but playback actions will not produce sound.
 
