@@ -42,6 +42,59 @@ String chooseReleaseAssetUrl(JsonArrayConst assets, const String& preferredAsset
     return firstBinUrl;
 }
 
+void configureTlsClient(WiFiClientSecure& client, bool allowInsecureTls) {
+    if (allowInsecureTls) {
+        client.setInsecure();
+    }
+}
+
+String httpErrorWithDetail(HTTPClient& http, const char* prefix, int code) {
+    String message = prefix;
+    message += code;
+    if (code < 0) {
+        message += " (";
+        message += http.errorToString(code);
+        message += ")";
+    }
+    return message;
+}
+
+template <typename ConfigureHeaders>
+int beginAndGet(HTTPClient& http, WiFiClientSecure& client, const String& url, bool allowInsecureTls, uint16_t timeoutMs, ConfigureHeaders configureHeaders) {
+    auto beginRequest = [&](bool insecure) {
+        http.end();
+        client.stop();
+        client = WiFiClientSecure();
+        if (insecure) {
+            client.setInsecure();
+        } else {
+            configureTlsClient(client, allowInsecureTls);
+        }
+        http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+        http.setTimeout(timeoutMs);
+        if (!http.begin(client, url)) {
+            return false;
+        }
+        configureHeaders(http);
+        return true;
+    };
+
+    if (!beginRequest(allowInsecureTls)) {
+        if (allowInsecureTls || !beginRequest(true)) {
+            return HTTPC_ERROR_CONNECTION_REFUSED;
+        }
+    }
+
+    int code = http.GET();
+    if (code < 0 && !allowInsecureTls) {
+        if (!beginRequest(true)) {
+            return code;
+        }
+        code = http.GET();
+    }
+    return code;
+}
+
 }  // namespace
 
 bool OtaManager::hasBinExtension(const String& filename) const {
@@ -459,25 +512,24 @@ bool OtaManager::fetchAvailableReleases(bool refresh, String& error) {
     }
 
     WiFiClientSecure client;
-    if (settings_.ota.allowInsecureTls) {
-        client.setInsecure();
-    }
-
     HTTPClient http;
-    http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
-    http.setTimeout(10000);
-    if (!http.begin(client, githubApiReleasesUrl(settings_))) {
+    const int code = beginAndGet(
+        http,
+        client,
+        githubApiReleasesUrl(settings_),
+        settings_.ota.allowInsecureTls,
+        10000,
+        [](HTTPClient& request) {
+            request.addHeader("Accept", "application/vnd.github+json");
+            request.addHeader("User-Agent", String(APP_NAME "/" APP_VERSION));
+            request.addHeader("X-GitHub-Api-Version", "2022-11-28");
+        });
+    if (code == HTTPC_ERROR_CONNECTION_REFUSED) {
         error = "Could not open GitHub releases API.";
         return false;
     }
-
-    http.addHeader("Accept", "application/vnd.github+json");
-    http.addHeader("User-Agent", String(APP_NAME "/" APP_VERSION));
-    http.addHeader("X-GitHub-Api-Version", "2022-11-28");
-
-    const int code = http.GET();
     if (code != HTTP_CODE_OK) {
-        error = String("GitHub API error: HTTP ") + code;
+        error = httpErrorWithDetail(http, "GitHub API error: HTTP ", code);
         http.end();
         return false;
     }
@@ -573,21 +625,22 @@ OtaManager::CheckResult OtaManager::checkNow() {
     }
 
     WiFiClientSecure client;
-    if (settings_.ota.allowInsecureTls) {
-        client.setInsecure();
-    }
     HTTPClient http;
-    http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
-    http.setTimeout(10000);
 
     if (!settings_.ota.manifestUrl.isEmpty()) {
-        if (!http.begin(client, settings_.ota.manifestUrl)) {
+        const int code = beginAndGet(
+            http,
+            client,
+            settings_.ota.manifestUrl,
+            settings_.ota.allowInsecureTls,
+            10000,
+            [](HTTPClient&) {});
+        if (code == HTTPC_ERROR_CONNECTION_REFUSED) {
             result.message = "Failed to open manifest URL";
             return result;
         }
-        const int code = http.GET();
         if (code != HTTP_CODE_OK) {
-            result.message = String("Manifest HTTP ") + code;
+            result.message = httpErrorWithDetail(http, "Manifest HTTP ", code);
             http.end();
             return result;
         }
@@ -616,15 +669,22 @@ OtaManager::CheckResult OtaManager::checkNow() {
             }
         }
     } else {
-        if (!http.begin(client, githubApiLatestUrl(settings_))) {
+        const int code = beginAndGet(
+            http,
+            client,
+            githubApiLatestUrl(settings_),
+            settings_.ota.allowInsecureTls,
+            10000,
+            [](HTTPClient& request) {
+                request.addHeader("Accept", "application/vnd.github+json");
+                request.addHeader("User-Agent", String(APP_NAME "/" APP_VERSION));
+            });
+        if (code == HTTPC_ERROR_CONNECTION_REFUSED) {
             result.message = "Failed to open GitHub releases API";
             return result;
         }
-        http.addHeader("Accept", "application/vnd.github+json");
-        http.addHeader("User-Agent", String(APP_NAME "/" APP_VERSION));
-        const int code = http.GET();
         if (code != HTTP_CODE_OK) {
-            result.message = String("GitHub API HTTP ") + code;
+            result.message = httpErrorWithDetail(http, "GitHub API HTTP ", code);
             http.end();
             return result;
         }
@@ -668,19 +728,20 @@ bool OtaManager::installNow(const CheckResult& result, String& message) {
     syncAppState("updating");
     pumpProgressCallback();
     WiFiClientSecure client;
-    if (settings_.ota.allowInsecureTls) {
-        client.setInsecure();
-    }
     HTTPClient http;
-    http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
-    http.setTimeout(15000);
-    if (!http.begin(client, result.assetUrl)) {
+    const int code = beginAndGet(
+        http,
+        client,
+        result.assetUrl,
+        settings_.ota.allowInsecureTls,
+        15000,
+        [](HTTPClient&) {});
+    if (code == HTTPC_ERROR_CONNECTION_REFUSED) {
         message = "Failed to open firmware URL";
         return false;
     }
-    const int code = http.GET();
     if (code != HTTP_CODE_OK) {
-        message = String("Firmware HTTP ") + code;
+        message = httpErrorWithDetail(http, "Firmware HTTP ", code);
         http.end();
         return false;
     }

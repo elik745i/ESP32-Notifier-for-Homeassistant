@@ -1,5 +1,6 @@
 from pathlib import Path
 import gzip
+import re
 
 Import("env")
 
@@ -21,11 +22,35 @@ def c_array(data: bytes) -> str:
     return ",\n    ".join(rows)
 
 
+def minify_html(text: str) -> str:
+    text = re.sub(r"<!--(?!\s*\[if).*?-->", "", text, flags=re.S)
+    text = re.sub(r">\s+<", "><", text)
+    text = re.sub(r"\s{2,}", " ", text)
+    return text.strip()
+
+
+def minify_css(text: str) -> str:
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"\s*([{}:;,>])\s*", r"\1", text)
+    text = text.replace(";}", "}")
+    return text.strip()
+
+
+def prepare_payload(path: Path) -> bytes:
+    raw = path.read_bytes()
+    if path.suffix.lower() == ".html":
+        return minify_html(raw.decode("utf-8")).encode("utf-8")
+    if path.suffix.lower() == ".css":
+        return minify_css(raw.decode("utf-8")).encode("utf-8")
+    return raw
+
+
 assets = []
 for path in sorted(WEB_DIR.glob("*")):
     if not path.is_file():
         continue
-    raw = path.read_bytes()
+    raw = prepare_payload(path)
     gzip_encoded = is_gzip_payload(raw)
     payload = raw if gzip_encoded else gzip.compress(raw, compresslevel=9)
     mime = {

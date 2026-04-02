@@ -1,5 +1,27 @@
 #include "web_server.h"
 
+#ifdef APP_DISABLE_WEB_UI
+
+WebServerManager::WebServerManager() = default;
+
+void WebServerManager::begin(
+    AppState&,
+    WiFiManager&,
+    SettingsManager&,
+    OtaManager&,
+    SettingsGetter,
+    SettingsSaver,
+    PlayHandler,
+    StopHandler,
+    VolumeHandler,
+    OtaHandler,
+    MqttHandler,
+    SimpleHandler,
+    SimpleHandler) {
+}
+
+#else
+
 #include <ArduinoJson.h>
 
 #include "generated_web_assets.h"
@@ -410,3 +432,5 @@ void WebServerManager::registerWebRoutes() {
         request->send(404, "text/plain", "Not found");
     });
 }
+
+#endif

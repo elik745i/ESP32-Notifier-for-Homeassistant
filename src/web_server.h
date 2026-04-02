@@ -1,8 +1,12 @@
 #pragma once
 
 #include <Arduino.h>
-#include <ESPAsyncWebServer.h>
+#include <ArduinoJson.h>
 #include <functional>
+
+#ifndef APP_DISABLE_WEB_UI
+#include <ESPAsyncWebServer.h>
+#endif
 
 #include "app_state.h"
 #include "ota_manager.h"
@@ -37,6 +41,7 @@ class WebServerManager {
         SimpleHandler factoryResetHandler);
 
   private:
+#ifndef APP_DISABLE_WEB_UI
     AsyncWebServer server_;
     AppState* appState_ = nullptr;
     WiFiManager* wifiManager_ = nullptr;
@@ -57,4 +62,5 @@ class WebServerManager {
     void sendJson(AsyncWebServerRequest* request, const JsonDocument& doc, int statusCode = 200);
     void registerApiRoutes();
     void registerWebRoutes();
+  #endif
 };

@@ -37,6 +37,20 @@ String batteryStateTopic(const SettingsBundle& settings) {
     return settings.mqtt.baseTopic + "/state/battery";
 }
 
+#ifdef APP_ENABLE_HACS_MQTT
+String hacsMediaPlayerDiscoveryTopic(const SettingsBundle& settings) {
+    return baseDiscoveryPrefix() + "/media_player/" + settings.device.deviceName + "/config";
+}
+
+String hacsMediaPlayerStateTopic(const SettingsBundle& settings, const char* field) {
+    return settings.mqtt.baseTopic + "/hacs/" + field;
+}
+
+String hacsMediaPlayerCommandTopic(const SettingsBundle& settings, const char* command) {
+    return settings.mqtt.baseTopic + "/hacs/cmd/" + command;
+}
+#endif
+
 String commandTopic(const SettingsBundle& settings, const char* command) {
     return settings.mqtt.baseTopic + "/cmd/" + command;
 }
@@ -118,5 +132,44 @@ String discoveryPayloadText(const SettingsBundle& settings, const char* objectId
     serializeJson(doc, out);
     return out;
 }
+
+#ifdef APP_ENABLE_HACS_MQTT
+String discoveryPayloadHacsMediaPlayer(const SettingsBundle& settings) {
+    JsonDocument doc;
+    doc["name"] = settings.device.friendlyName;
+    doc["unique_id"] = entityUniqueId(settings, "mqtt_media_player");
+
+    JsonObject availability = doc["availability"].to<JsonObject>();
+    availability["topic"] = availabilityTopic(settings);
+    availability["payload_available"] = "online";
+    availability["payload_not_available"] = "offline";
+
+    doc["state_state_topic"] = hacsMediaPlayerStateTopic(settings, "state");
+    doc["state_title_topic"] = hacsMediaPlayerStateTopic(settings, "title");
+    doc["state_mediatype_topic"] = hacsMediaPlayerStateTopic(settings, "mediatype");
+    doc["state_volume_topic"] = hacsMediaPlayerStateTopic(settings, "volume");
+
+    doc["command_play_topic"] = hacsMediaPlayerCommandTopic(settings, "play");
+    doc["command_play_payload"] = "play";
+    doc["command_pause_topic"] = hacsMediaPlayerCommandTopic(settings, "pause");
+    doc["command_pause_payload"] = "pause";
+    doc["command_playpause_topic"] = hacsMediaPlayerCommandTopic(settings, "playpause");
+    doc["command_playpause_payload"] = "playpause";
+    doc["command_next_topic"] = hacsMediaPlayerCommandTopic(settings, "next");
+    doc["command_next_payload"] = "next";
+    doc["command_previous_topic"] = hacsMediaPlayerCommandTopic(settings, "previous");
+    doc["command_previous_payload"] = "previous";
+    doc["command_stop_topic"] = hacsMediaPlayerCommandTopic(settings, "stop");
+    doc["command_stop_payload"] = "stop";
+    doc["command_volume_topic"] = hacsMediaPlayerCommandTopic(settings, "volume");
+    doc["command_playmedia_topic"] = hacsMediaPlayerCommandTopic(settings, "playmedia");
+
+    fillDevice(settings, doc["device"].to<JsonObject>());
+
+    String out;
+    serializeJson(doc, out);
+    return out;
+}
+#endif
 
 }  // namespace HaBridge

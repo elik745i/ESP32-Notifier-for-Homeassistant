@@ -399,7 +399,7 @@ bool playRequest(const String& url, const String& label, const String& type, con
 }
 
 void handleMqttCommand(const PlaybackCommand& command) {
-    if (command.action == "stop") {
+    if (command.action == "stop" || command.action == "pause") {
         audioPlayer->stop();
     } else if (command.action == "volume") {
         settings->device.savedVolumePercent = command.volumePercent;
@@ -409,6 +409,22 @@ void handleMqttCommand(const PlaybackCommand& command) {
         deferredActions->volumePending = false;
         deferredActions->volumeSavePending = true;
         deferredActions->volumeSaveAt = millis() + kVolumePersistDelayMs;
+    } else if (command.action == "play" && command.url.isEmpty()) {
+        const AppStateSnapshot snapshot = appState->snapshot();
+        if (!snapshot.playback.url.isEmpty()) {
+            String ignored;
+            playRequest(snapshot.playback.url, snapshot.playback.title, snapshot.playback.type, snapshot.playback.source, ignored);
+        }
+    } else if (command.action == "playpause") {
+        const AppStateSnapshot snapshot = appState->snapshot();
+        if (snapshot.playback.state == "playing" || snapshot.playback.state == "buffering") {
+            audioPlayer->stop();
+        } else if (!snapshot.playback.url.isEmpty()) {
+            String ignored;
+            playRequest(snapshot.playback.url, snapshot.playback.title, snapshot.playback.type, snapshot.playback.source, ignored);
+        }
+    } else if (command.action == "next" || command.action == "previous") {
+        // The notifier has no queue-based transport controls; accept these commands as no-ops.
     } else {
         String ignored;
         playRequest(command.url, command.label, command.mediaType.isEmpty() ? command.action : command.mediaType, command.source, ignored);

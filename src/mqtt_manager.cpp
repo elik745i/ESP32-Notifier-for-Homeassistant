@@ -43,6 +43,49 @@ uint8_t percentFromVolumeLevel(float level) {
     const float clamped = level < 0.0f ? 0.0f : (level > 1.0f ? 1.0f : level);
     return static_cast<uint8_t>((clamped * 100.0f) + 0.5f);
 }
+
+#ifdef APP_ENABLE_HACS_MQTT
+[[maybe_unused]]
+String normalizedHacsPlaybackState(const String& value) {
+    String state = value;
+    state.trim();
+    state.toLowerCase();
+
+    if (state == "buffering") {
+        return "playing";
+    }
+
+    if (state == "playing" || state == "paused" || state == "idle" || state == "off" || state == "stopped") {
+        return state;
+    }
+
+    return "idle";
+}
+
+[[maybe_unused]]
+String normalizedHacsMediaType(const String& value) {
+    String mediaType = value;
+    mediaType.trim();
+    mediaType.toLowerCase();
+
+    if (mediaType == "tts" || mediaType == "speech" || mediaType == "announce") {
+        return "music";
+    }
+
+    if (mediaType.isEmpty() || mediaType == "idle" || mediaType == "stream" || mediaType == "radio" || mediaType == "audio") {
+        return "music";
+    }
+
+    return mediaType;
+}
+
+[[maybe_unused]]
+String hacsVolumePayload(uint8_t volumePercent) {
+    char buffer[8];
+    snprintf(buffer, sizeof(buffer), "%.2f", static_cast<float>(volumePercent) / 100.0f);
+    return String(buffer);
+}
+#endif
 }  // namespace
 
 void MqttManager::begin(const SettingsBundle& settings, AppState& appState, WiFiManager& wifiManager, CommandHandler commandHandler) {
@@ -142,6 +185,16 @@ void MqttManager::handleConnected(bool sessionPresent) {
     client_.subscribe(HaBridge::commandTopic(settings_, "tts").c_str(), 1);
     client_.subscribe(HaBridge::commandTopic(settings_, "stop").c_str(), 1);
     client_.subscribe(HaBridge::commandTopic(settings_, "volume").c_str(), 1);
+#ifdef APP_ENABLE_HACS_MQTT
+    client_.subscribe(HaBridge::hacsMediaPlayerCommandTopic(settings_, "play").c_str(), 1);
+    client_.subscribe(HaBridge::hacsMediaPlayerCommandTopic(settings_, "pause").c_str(), 1);
+    client_.subscribe(HaBridge::hacsMediaPlayerCommandTopic(settings_, "playpause").c_str(), 1);
+    client_.subscribe(HaBridge::hacsMediaPlayerCommandTopic(settings_, "next").c_str(), 1);
+    client_.subscribe(HaBridge::hacsMediaPlayerCommandTopic(settings_, "previous").c_str(), 1);
+    client_.subscribe(HaBridge::hacsMediaPlayerCommandTopic(settings_, "stop").c_str(), 1);
+    client_.subscribe(HaBridge::hacsMediaPlayerCommandTopic(settings_, "volume").c_str(), 1);
+    client_.subscribe(HaBridge::hacsMediaPlayerCommandTopic(settings_, "playmedia").c_str(), 1);
+#endif
     publishDiscovery();
     publishState();
 }
@@ -163,6 +216,42 @@ void MqttManager::handleMessage(char* topic, char* payload, AsyncMqttClientMessa
     const String topicValue = topic;
     const String payloadValue = payloadToString(payload, len);
     PlaybackCommand command;
+#ifdef APP_ENABLE_HACS_MQTT
+    if (topicValue == HaBridge::hacsMediaPlayerCommandTopic(settings_, "stop")) {
+        command.action = "stop";
+        commandHandler_(command);
+        return;
+    }
+
+    if (topicValue == HaBridge::hacsMediaPlayerCommandTopic(settings_, "pause")) {
+        command.action = "pause";
+        commandHandler_(command);
+        return;
+    }
+
+    if (topicValue == HaBridge::hacsMediaPlayerCommandTopic(settings_, "play") ||
+        topicValue == HaBridge::hacsMediaPlayerCommandTopic(settings_, "playpause") ||
+        topicValue == HaBridge::hacsMediaPlayerCommandTopic(settings_, "next") ||
+        topicValue == HaBridge::hacsMediaPlayerCommandTopic(settings_, "previous")) {
+        command.action = topicValue.substring(topicValue.lastIndexOf('/') + 1);
+        commandHandler_(command);
+        return;
+    }
+
+    if (topicValue == HaBridge::hacsMediaPlayerCommandTopic(settings_, "volume")) {
+        command.action = "volume";
+        command.volumePercent = payloadValue.indexOf('.') >= 0
+            ? percentFromVolumeLevel(payloadValue.toFloat())
+            : payloadValue.toInt();
+        commandHandler_(command);
+        return;
+    }
+
+    if (topicValue == HaBridge::hacsMediaPlayerCommandTopic(settings_, "playmedia")) {
+        command.action = "play";
+    }
+#endif
+
     if (topicValue == HaBridge::commandTopic(settings_, "stop")) {
         command.action = "stop";
         commandHandler_(command);
@@ -189,7 +278,9 @@ void MqttManager::handleMessage(char* topic, char* payload, AsyncMqttClientMessa
         return;
     }
 
-    command.action = topicValue.endsWith("/tts") ? "tts" : "play";
+    if (command.action.isEmpty()) {
+        command.action = topicValue.endsWith("/tts") ? "tts" : "play";
+    }
     if (payloadValue.startsWith("{")) {
         JsonDocument doc;
         if (deserializeJson(doc, payloadValue) == DeserializationError::Ok) {
@@ -251,6 +342,12 @@ void MqttManager::publishState() {
     publishJson(HaBridge::batteryStateTopic(settings_), battery, true);
 
     client_.publish((settings_.mqtt.baseTopic + "/state/volume").c_str(), 1, true, String(snapshot.playback.volumePercent).c_str());
+#ifdef APP_ENABLE_HACS_MQTT
+    client_.publish(HaBridge::hacsMediaPlayerStateTopic(settings_, "state").c_str(), 1, true, normalizedHacsPlaybackState(snapshot.playback.state).c_str());
+    client_.publish(HaBridge::hacsMediaPlayerStateTopic(settings_, "title").c_str(), 1, true, snapshot.playback.title.c_str());
+    client_.publish(HaBridge::hacsMediaPlayerStateTopic(settings_, "mediatype").c_str(), 1, true, normalizedHacsMediaType(snapshot.playback.type).c_str());
+    client_.publish(HaBridge::hacsMediaPlayerStateTopic(settings_, "volume").c_str(), 1, true, hacsVolumePayload(snapshot.playback.volumePercent).c_str());
+#endif
 }
 
 void MqttManager::publishBattery(float voltage, float rawAdcVoltage, uint16_t rawAdc) {
@@ -286,6 +383,14 @@ void MqttManager::publishDiscovery() {
     client_.publish(
         HaBridge::discoveryTopic(settings_, "text", "play_url").c_str(), 1, true,
         HaBridge::discoveryPayloadText(settings_, "play_url", "Play URL", HaBridge::commandTopic(settings_, "play").c_str(), "mdi:link").c_str());
+#ifdef APP_ENABLE_HACS_MQTT
+    client_.publish(
+        HaBridge::hacsMediaPlayerDiscoveryTopic(settings_).c_str(), 1, true,
+        HaBridge::discoveryPayloadHacsMediaPlayer(settings_).c_str());
+    client_.publish(
+        HaBridge::discoveryTopic(settings_, "media_player", "hacs_player").c_str(), 1, true,
+        "");
+#endif
 }
 
 bool MqttManager::isConnected() const {
