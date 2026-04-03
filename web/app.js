@@ -437,8 +437,13 @@ function renderFirmwareList(releases, currentVersion, latestVersion, selectedVer
     subtitle.className = "firmware-subtitle";
     subtitle.textContent = `${release.tag} - ${release.publishedAt || "unknown date"} - ${release.assetName || "firmware asset"}`;
 
+    const note = document.createElement("div");
+    note.className = "firmware-note";
+    note.textContent = firmwareReleaseNote(release);
+
     meta.appendChild(title);
     meta.appendChild(subtitle);
+    meta.appendChild(note);
 
     const badges = document.createElement("div");
     badges.className = "badge-row";
@@ -471,6 +476,20 @@ function renderFirmwareList(releases, currentVersion, latestVersion, selectedVer
   });
 
   updateFirmwareSelectionLabel();
+}
+
+function firmwareReleaseNote(release) {
+  const variant = String(release?.variantLabel || "").toLowerCase();
+
+  if (variant.includes("hacs slim")) {
+    return "HACS slim build: MQTT media-player integration focused build with reduced local UI footprint.";
+  }
+
+  if (variant.includes("hacs")) {
+    return "HACS build: best choice for Home Assistant MQTT Media Player integration and media-player style control.";
+  }
+
+  return "Standard build: general notifier firmware with the local web UI and the project’s default MQTT control model.";
 }
 
 function beginFirmwareReconnectReload(initialDelayMs = 12000) {

@@ -9,6 +9,8 @@
 
 namespace {
 constexpr unsigned long RELEASE_CACHE_TTL_MS = 5UL * 60UL * 1000UL;
+constexpr uint8_t RELEASE_REFRESH_MAX_ATTEMPTS = 4;
+constexpr unsigned long RELEASE_REFRESH_RETRY_DELAY_MS = 1500UL;
 
 String githubApiLatestUrl(const SettingsBundle& settings) {
     return String("https://api.github.com/repos/") + settings.ota.owner + "/" + settings.ota.repository + "/releases/latest";
@@ -169,8 +171,8 @@ void OtaManager::loop() {
         rebootPending_ = false;
         ESP.restart();
     }
-    if (pendingReleaseRefresh_ && !busy_ && !releaseRefreshInProgress_) {
-        pendingReleaseRefresh_ = false;
+    if (pendingReleaseRefresh_ && !busy_ && !releaseRefreshInProgress_ &&
+        static_cast<long>(millis() - releaseRefreshNextAttemptAtMs_) >= 0) {
         runReleaseRefreshTask();
         return;
     }
@@ -341,12 +343,17 @@ void OtaManager::appendFirmwareInfoJson(JsonObject root, bool refresh, String& e
     root["updateTotalBytes"] = progressTotalBytes_;
     root["releaseRefreshPending"] = pendingReleaseRefresh_;
     root["releaseRefreshInProgress"] = releaseRefreshInProgress_;
+    root["releaseRefreshAttemptsRemaining"] = releaseRefreshAttemptsRemaining_;
+    root["releaseRefreshAttemptsStarted"] = releaseRefreshAttemptsStarted_;
 
     if (refresh) {
         if (busy_) {
             error = "Another update is already in progress.";
         } else if (!pendingReleaseRefresh_ && !releaseRefreshInProgress_) {
             pendingReleaseRefresh_ = true;
+            releaseRefreshAttemptsRemaining_ = RELEASE_REFRESH_MAX_ATTEMPTS;
+            releaseRefreshAttemptsStarted_ = 0;
+            releaseRefreshNextAttemptAtMs_ = millis();
             releaseRefreshError_ = "";
             lastMessage_ = "queued release refresh";
             root["updateStatus"] = lastMessage_;
@@ -430,9 +437,12 @@ bool OtaManager::triggerInstallVersion(const String& version, const String& asse
 
 void OtaManager::runReleaseRefreshTask() {
     releaseRefreshInProgress_ = true;
-    pendingReleaseRefresh_ = false;
     releaseRefreshError_ = "";
-    lastMessage_ = "checking releases";
+    if (releaseRefreshAttemptsRemaining_ > 0) {
+        releaseRefreshAttemptsRemaining_--;
+    }
+    releaseRefreshAttemptsStarted_++;
+    lastMessage_ = String("checking releases (attempt ") + releaseRefreshAttemptsStarted_ + "/" + RELEASE_REFRESH_MAX_ATTEMPTS + ")";
     syncAppState("checking releases");
 
     String error;
@@ -440,11 +450,23 @@ void OtaManager::runReleaseRefreshTask() {
 
     releaseRefreshInProgress_ = false;
     if (success) {
+        pendingReleaseRefresh_ = false;
+        releaseRefreshAttemptsRemaining_ = 0;
         lastMessage_ = releaseCache_.empty() ? "No firmware releases found." : "Firmware releases refreshed";
         syncAppState("releases refreshed");
         return;
     }
 
+    if (releaseRefreshAttemptsRemaining_ > 0) {
+        pendingReleaseRefresh_ = true;
+        releaseRefreshError_ = error;
+        releaseRefreshNextAttemptAtMs_ = millis() + RELEASE_REFRESH_RETRY_DELAY_MS;
+        lastMessage_ = String("Retrying release refresh...");
+        syncAppState("release refresh retry", error);
+        return;
+    }
+
+    pendingReleaseRefresh_ = false;
     releaseRefreshError_ = error;
     lastMessage_ = error;
     syncAppState("release refresh failed", error);

@@ -54,6 +54,9 @@ class OtaManager {
     volatile bool pendingReleaseRefresh_ = false;
     String pendingInstallVersion_;
     String pendingInstallAssetName_;
+    uint8_t releaseRefreshAttemptsRemaining_ = 0;
+    uint8_t releaseRefreshAttemptsStarted_ = 0;
+    unsigned long releaseRefreshNextAttemptAtMs_ = 0;
     bool busy_ = false;
     bool releaseRefreshInProgress_ = false;
     String releaseRefreshError_;

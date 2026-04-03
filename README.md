@@ -42,10 +42,13 @@ The repository builds successfully with PlatformIO and emits [firmware.bin](.pio
 
 Current firmware version in this repository:
 
-- `v0.1.7`
+- `v0.1.8`
 
 Recent firmware and web UI updates included in this version:
 
+- the Firmware tab now lists each GitHub firmware asset separately, so Standard and HACS builds appear as distinct install options with inline notes explaining what each variant is for
+- release refresh from GitHub now retries automatically in the background after a single Check Releases action instead of requiring repeated button presses
+- Home Assistant HACS media-player playback now accepts the custom integration playmedia payload format more reliably
 - reduced heap churn while audio is active by streaming status JSON responses and skipping duplicate playback-state publications when the device page polls during playback
 - audio I2S output is enabled again in the main build, with larger OTA slots and tuned stream buffering for more reliable playback
 - the Audio tab now includes Radio Browser country and station pickers, remembers the browser selection, and uses a single Play or Stop button
