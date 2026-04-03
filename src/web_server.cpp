@@ -324,15 +324,16 @@ void WebServerManager::registerApiRoutes() {
                 return;
             }
             const String version = String(static_cast<const char*>(doc["version"] | ""));
+            const String assetName = String(static_cast<const char*>(doc["assetName"] | ""));
             String error;
-            if (!otaManager_->triggerInstallVersion(version, error)) {
+            if (!otaManager_->triggerInstallVersion(version, assetName, error)) {
                 request->send(409, "application/json", String("{\"error\":\"") + error + "\"}");
                 return;
             }
 
             JsonDocument response;
             response["ok"] = true;
-            response["message"] = String("Update queued for ") + version;
+            response["message"] = String("Update queued for ") + (assetName.isEmpty() ? version : assetName);
             sendJson(request, response);
         });
 

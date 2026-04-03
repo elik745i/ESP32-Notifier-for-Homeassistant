@@ -21,6 +21,7 @@ class OtaManager {
     void appendStatusJson(JsonObject root) const;
     void appendFirmwareInfoJson(JsonObject root, bool refresh, String& error);
     bool triggerInstallVersion(const String& version, String& error);
+    bool triggerInstallVersion(const String& version, const String& assetName, String& error);
 
   private:
     struct CheckResult {
@@ -39,8 +40,9 @@ class OtaManager {
         String publishedAt;
         String assetUrl;
         String assetName;
+          String variantLabel;
         bool prerelease = false;
-        bool isCurrent = false;
+          bool isInstalled = false;
         bool isLatest = false;
         bool isNew = false;
       };
@@ -51,6 +53,7 @@ class OtaManager {
     volatile bool pendingApply_ = false;
     volatile bool pendingReleaseRefresh_ = false;
     String pendingInstallVersion_;
+    String pendingInstallAssetName_;
     bool busy_ = false;
     bool releaseRefreshInProgress_ = false;
     String releaseRefreshError_;
@@ -58,6 +61,7 @@ class OtaManager {
     String latestVersion_;
     bool updateAvailable_ = false;
     String selectedVersion_;
+    String selectedAssetName_;
     String updatePhase_;
     size_t progressBytes_ = 0;
     size_t progressTotalBytes_ = 0;
@@ -73,10 +77,10 @@ class OtaManager {
 
     void runTask(bool applyAfterCheck);
     void runReleaseRefreshTask();
-    void runVersionTask(const String& version);
+    void runVersionTask(const String& version, const String& assetName);
     CheckResult checkNow();
     bool fetchAvailableReleases(bool refresh, String& error);
-    bool resolveVersionResult(const String& version, CheckResult& result, String& error);
+    bool resolveVersionResult(const String& version, const String& assetName, CheckResult& result, String& error);
     bool installNow(const CheckResult& result, String& message);
     int compareVersions(const String& left, const String& right) const;
     String normalizeVersion(const String& value) const;

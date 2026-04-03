@@ -143,14 +143,22 @@ function saveRadioSelection(selection) {
 
 function selectedFirmwareVersion() {
   const selected = document.querySelector('input[name="firmwareVersion"]:checked');
-  return selected ? selected.value : "";
+  if (!selected) {
+    return null;
+  }
+  return {
+    key: selected.value,
+    version: selected.dataset.version || "",
+    assetName: selected.dataset.assetName || "",
+    label: selected.dataset.label || selected.dataset.version || selected.value,
+  };
 }
 
 function updateFirmwareSelectionLabel() {
   const selected = selectedFirmwareVersion();
-  state.firmwareSelectedVersion = selected;
+  state.firmwareSelectedVersion = selected?.key || "";
   if (elements.firmwareSelectionLabel) {
-    elements.firmwareSelectionLabel.textContent = selected ? `Selected: ${selected}` : "No firmware selected";
+    elements.firmwareSelectionLabel.textContent = selected ? `Selected: ${selected.label}` : "No firmware selected";
   }
 }
 
@@ -408,9 +416,12 @@ function renderFirmwareList(releases, currentVersion, latestVersion, selectedVer
     const radio = document.createElement("input");
     radio.type = "radio";
     radio.name = "firmwareVersion";
-    radio.value = release.tag;
+    radio.value = `${release.tag}|${release.assetName || index}`;
+    radio.dataset.version = release.tag;
+    radio.dataset.assetName = release.assetName || "";
+    radio.dataset.label = `${release.tag} (${release.variantLabel || release.assetName || "firmware"})`;
     radio.checked = Boolean(
-      (selectedVersion && release.tag === selectedVersion) ||
+      (selectedVersion && radio.value === selectedVersion) ||
       (!selectedVersion && (release.isLatest || (!latestVersion && index === 0)))
     );
     radio.addEventListener("change", updateFirmwareSelectionLabel);
@@ -420,7 +431,7 @@ function renderFirmwareList(releases, currentVersion, latestVersion, selectedVer
 
     const title = document.createElement("div");
     title.className = "firmware-title";
-    title.textContent = release.name || release.tag;
+    title.textContent = `${release.name || release.tag} ${release.variantLabel ? `(${release.variantLabel})` : ""}`.trim();
 
     const subtitle = document.createElement("div");
     subtitle.className = "firmware-subtitle";
@@ -432,7 +443,7 @@ function renderFirmwareList(releases, currentVersion, latestVersion, selectedVer
     const badges = document.createElement("div");
     badges.className = "badge-row";
 
-    if (release.isCurrent || release.tag === currentVersion) {
+    if (release.isInstalled) {
       const badge = document.createElement("span");
       badge.className = "badge current";
       badge.textContent = "Installed";
@@ -1213,7 +1224,7 @@ async function refreshFirmwareInfo(forceRefresh = false) {
 
   try {
     let info = await request(forceRefresh ? "/api/firmware?refresh=1" : "/api/firmware");
-    let refreshPollAttempts = forceRefresh ? 24 : 0;
+    let refreshPollAttempts = forceRefresh ? 60 : 0;
 
     while (refreshPollAttempts > 0 && (info.releaseRefreshPending || info.releaseRefreshInProgress)) {
       elements.otaStatusLabel.textContent = "Checking releases...";
@@ -1227,7 +1238,9 @@ async function refreshFirmwareInfo(forceRefresh = false) {
     const latestVersion = info.latestVersion || "No release";
     state.firmwareReleases = Array.isArray(info.releases) ? info.releases : state.firmwareReleases;
     state.firmwareLatestVersion = latestVersion;
-    state.firmwareSelectedVersion = info.selectedVersion || state.firmwareSelectedVersion;
+    state.firmwareSelectedVersion = info.selectedVersion
+      ? `${info.selectedVersion}|${info.selectedAssetName || ""}`
+      : state.firmwareSelectedVersion;
     state.firmwareReleasesLoaded = true;
 
     elements.firmwareVersionCard.textContent = currentVersion;
@@ -1586,8 +1599,8 @@ async function checkOta() {
 }
 
 async function installSelectedFirmware() {
-  const version = selectedFirmwareVersion();
-  if (!version) {
+  const selection = selectedFirmwareVersion();
+  if (!selection?.version) {
     setMessage("Select a firmware release first.", true);
     return;
   }
@@ -1596,10 +1609,10 @@ async function installSelectedFirmware() {
   startFirmwareProgressPolling();
   const result = await request("/api/firmware/update", {
     method: "POST",
-    body: JSON.stringify({ version }),
+    body: JSON.stringify({ version: selection.version, assetName: selection.assetName }),
   });
   elements.otaStatus.textContent = JSON.stringify(result, null, 2);
-  setMessage(result.message || `Update queued for ${version}`);
+  setMessage(result.message || `Update queued for ${selection.label}`);
   await loadStatus();
 }
 

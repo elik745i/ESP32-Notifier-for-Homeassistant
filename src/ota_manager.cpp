@@ -27,19 +27,39 @@ String applyVersionTemplate(String templ, const String& version) {
     return templ;
 }
 
-String chooseReleaseAssetUrl(JsonArrayConst assets, const String& preferredAssetName) {
-    String firstBinUrl;
-    for (JsonObjectConst asset : assets) {
-        const String name = String(static_cast<const char*>(asset["name"] | ""));
-        const String url = String(static_cast<const char*>(asset["browser_download_url"] | ""));
-        if (name == preferredAssetName) {
-            return url;
-        }
-        if (firstBinUrl.isEmpty() && name.endsWith(".bin")) {
-            firstBinUrl = url;
-        }
+String normalizedVersionTag(String value) {
+    if (value.isEmpty()) {
+        return "";
     }
-    return firstBinUrl;
+    if (value.startsWith("v") || value.startsWith("V")) {
+        return value;
+    }
+    return "v" + value;
+}
+
+String currentReleaseAssetName(const SettingsBundle& settings) {
+    const String version = normalizedVersionTag(APP_VERSION);
+#ifdef APP_ENABLE_HACS_MQTT
+  #ifdef APP_DISABLE_WEB_UI
+    return applyVersionTemplate("esp32-notifier-hacs-slim-${version}.bin", version);
+  #else
+    return applyVersionTemplate("esp32-notifier-hacs-${version}.bin", version);
+  #endif
+#else
+    return applyVersionTemplate(settings.ota.assetTemplate, version);
+#endif
+}
+
+String variantLabelForAssetName(const String& assetName) {
+    String lowered = assetName;
+    lowered.toLowerCase();
+    if (lowered.indexOf("hacs-slim") >= 0) {
+        return "HACS Slim";
+    }
+    if (lowered.indexOf("hacs") >= 0) {
+        return "HACS";
+    }
+    return "Standard";
 }
 
 void configureTlsClient(WiFiClientSecure& client, bool allowInsecureTls) {
@@ -80,8 +100,11 @@ int beginAndGet(HTTPClient& http, WiFiClientSecure& client, const String& url, b
     };
 
     if (!beginRequest(allowInsecureTls)) {
-        if (allowInsecureTls || !beginRequest(true)) {
-            return HTTPC_ERROR_CONNECTION_REFUSED;
+        yield();
+        if (!beginRequest(allowInsecureTls)) {
+            if (allowInsecureTls || !beginRequest(true)) {
+                return HTTPC_ERROR_CONNECTION_REFUSED;
+            }
         }
     }
 
@@ -153,8 +176,10 @@ void OtaManager::loop() {
     }
     if (!pendingInstallVersion_.isEmpty() && !busy_) {
         const String version = pendingInstallVersion_;
+        const String assetName = pendingInstallAssetName_;
         pendingInstallVersion_ = "";
-        runVersionTask(version);
+        pendingInstallAssetName_ = "";
+        runVersionTask(version, assetName);
         return;
     }
     if (pendingCheck_ && !busy_) {
@@ -172,6 +197,7 @@ bool OtaManager::triggerCheck(bool applyAfterCheck) {
     pendingCheck_ = true;
     pendingApply_ = applyAfterCheck;
     selectedVersion_ = "";
+    selectedAssetName_ = "";
     resetProgress();
     lastMessage_ = applyAfterCheck ? "queued update" : "queued check";
     syncAppState("queued");
@@ -308,6 +334,7 @@ void OtaManager::appendFirmwareInfoJson(JsonObject root, bool refresh, String& e
     root["updateBusy"] = busy_;
     root["updateStatus"] = lastMessage_;
     root["selectedVersion"] = selectedVersion_;
+    root["selectedAssetName"] = selectedAssetName_;
     root["updatePhase"] = updatePhase_;
     root["updateProgress"] = progressPercent_;
     root["updateBytes"] = progressBytes_;
@@ -318,12 +345,15 @@ void OtaManager::appendFirmwareInfoJson(JsonObject root, bool refresh, String& e
     if (refresh) {
         if (busy_) {
             error = "Another update is already in progress.";
-        } else {
+        } else if (!pendingReleaseRefresh_ && !releaseRefreshInProgress_) {
             pendingReleaseRefresh_ = true;
             releaseRefreshError_ = "";
             lastMessage_ = "queued release refresh";
             root["updateStatus"] = lastMessage_;
             root["releaseRefreshPending"] = true;
+        } else {
+            root["releaseRefreshPending"] = pendingReleaseRefresh_;
+            root["releaseRefreshInProgress"] = releaseRefreshInProgress_;
         }
     }
 
@@ -337,8 +367,9 @@ void OtaManager::appendFirmwareInfoJson(JsonObject root, bool refresh, String& e
             item["publishedAt"] = release.publishedAt;
             item["assetUrl"] = release.assetUrl;
             item["assetName"] = release.assetName;
+            item["variantLabel"] = release.variantLabel;
             item["prerelease"] = release.prerelease;
-            item["isCurrent"] = release.isCurrent;
+            item["isInstalled"] = release.isInstalled;
             item["isLatest"] = release.isLatest;
             item["isNew"] = release.isNew;
         }
@@ -364,15 +395,42 @@ bool OtaManager::triggerInstallVersion(const String& version, String& error) {
 
     const String normalizedVersion = normalizeVersion(version);
     pendingInstallVersion_ = normalizedVersion;
+    pendingInstallAssetName_ = "";
     selectedVersion_ = normalizedVersion;
+    selectedAssetName_ = "";
     resetProgress();
     lastMessage_ = String("queued install ") + normalizedVersion;
     syncAppState("queued");
     return true;
 }
 
+bool OtaManager::triggerInstallVersion(const String& version, const String& assetName, String& error) {
+    if (assetName.isEmpty()) {
+        return triggerInstallVersion(version, error);
+    }
+    if (busy_) {
+        error = "Another update is already in progress.";
+        return false;
+    }
+    if (version.isEmpty()) {
+        error = "Select a firmware release first.";
+        return false;
+    }
+
+    const String normalizedVersion = normalizeVersion(version);
+    pendingInstallVersion_ = normalizedVersion;
+    pendingInstallAssetName_ = assetName;
+    selectedVersion_ = normalizedVersion;
+    selectedAssetName_ = assetName;
+    resetProgress();
+    lastMessage_ = String("queued install ") + assetName;
+    syncAppState("queued");
+    return true;
+}
+
 void OtaManager::runReleaseRefreshTask() {
     releaseRefreshInProgress_ = true;
+    pendingReleaseRefresh_ = false;
     releaseRefreshError_ = "";
     lastMessage_ = "checking releases";
     syncAppState("checking releases");
@@ -431,17 +489,18 @@ void OtaManager::runTask(bool applyAfterCheck) {
     scheduleReboot(1500);
 }
 
-void OtaManager::runVersionTask(const String& version) {
+void OtaManager::runVersionTask(const String& version, const String& assetName) {
     busy_ = true;
     selectedVersion_ = version;
+    selectedAssetName_ = assetName;
     resetProgress();
     updatePhase_ = "Checking";
-    lastMessage_ = String("checking ") + version;
+    lastMessage_ = assetName.isEmpty() ? String("checking ") + version : String("checking ") + assetName;
     syncAppState("checking");
 
     CheckResult result;
     String error;
-    if (!resolveVersionResult(version, result, error)) {
+    if (!resolveVersionResult(version, assetName, result, error)) {
         lastMessage_ = error;
         syncAppState("error", error);
         busy_ = false;
@@ -560,31 +619,62 @@ bool OtaManager::fetchAvailableReleases(bool refresh, String& error) {
     releaseCache_.clear();
     latestVersion_ = "";
     const String currentVersion = normalizeVersion(APP_VERSION);
+    const String installedAssetName = currentReleaseAssetName(settings_);
     for (JsonObjectConst release : doc.as<JsonArrayConst>()) {
         if (release["draft"] | false) {
             continue;
         }
 
-        ReleaseInfo item;
-        item.tag = normalizeVersion(String(static_cast<const char*>(release["tag_name"] | "")));
-        if (item.tag.isEmpty()) {
+        const String releaseTag = normalizeVersion(String(static_cast<const char*>(release["tag_name"] | "")));
+        if (releaseTag.isEmpty()) {
             continue;
         }
-        item.name = String(static_cast<const char*>(release["name"] | ""));
-        item.publishedAt = String(static_cast<const char*>(release["published_at"] | ""));
-        item.prerelease = release["prerelease"] | false;
-        item.assetName = applyVersionTemplate(settings_.ota.assetTemplate, item.tag);
-        item.assetUrl = chooseReleaseAssetUrl(release["assets"].as<JsonArrayConst>(), item.assetName);
-        if (item.assetUrl.isEmpty()) {
-            item.assetUrl = githubReleaseAssetUrl(settings_, item.tag, item.assetName);
+        const String releaseName = String(static_cast<const char*>(release["name"] | ""));
+        const String publishedAt = String(static_cast<const char*>(release["published_at"] | ""));
+        const bool prerelease = release["prerelease"] | false;
+        if (latestVersion_.isEmpty() && !prerelease) {
+            latestVersion_ = releaseTag;
         }
-        item.isCurrent = compareVersions(currentVersion, item.tag) == 0;
-        item.isNew = compareVersions(currentVersion, item.tag) < 0;
-        if (latestVersion_.isEmpty() && !item.prerelease) {
-            latestVersion_ = item.tag;
-            item.isLatest = true;
+
+        bool matchedAsset = false;
+        for (JsonObjectConst asset : release["assets"].as<JsonArrayConst>()) {
+            const String assetName = String(static_cast<const char*>(asset["name"] | ""));
+            if (!hasBinExtension(assetName)) {
+                continue;
+            }
+
+            ReleaseInfo item;
+            item.tag = releaseTag;
+            item.name = releaseName;
+            item.publishedAt = publishedAt;
+            item.assetName = assetName;
+            item.assetUrl = String(static_cast<const char*>(asset["browser_download_url"] | ""));
+            if (item.assetUrl.isEmpty()) {
+                item.assetUrl = githubReleaseAssetUrl(settings_, releaseTag, assetName);
+            }
+            item.variantLabel = variantLabelForAssetName(assetName);
+            item.prerelease = prerelease;
+            item.isInstalled = compareVersions(currentVersion, releaseTag) == 0 && assetName == installedAssetName;
+            item.isLatest = !latestVersion_.isEmpty() && releaseTag == latestVersion_;
+            item.isNew = compareVersions(currentVersion, releaseTag) < 0;
+            releaseCache_.push_back(item);
+            matchedAsset = true;
         }
-        releaseCache_.push_back(item);
+
+        if (!matchedAsset) {
+            ReleaseInfo item;
+            item.tag = releaseTag;
+            item.name = releaseName;
+            item.publishedAt = publishedAt;
+            item.prerelease = prerelease;
+            item.assetName = applyVersionTemplate(settings_.ota.assetTemplate, releaseTag);
+            item.assetUrl = githubReleaseAssetUrl(settings_, releaseTag, item.assetName);
+            item.variantLabel = variantLabelForAssetName(item.assetName);
+            item.isInstalled = compareVersions(currentVersion, releaseTag) == 0 && item.assetName == installedAssetName;
+            item.isLatest = !latestVersion_.isEmpty() && releaseTag == latestVersion_;
+            item.isNew = compareVersions(currentVersion, releaseTag) < 0;
+            releaseCache_.push_back(item);
+        }
     }
 
     if (latestVersion_.isEmpty() && !releaseCache_.empty()) {
@@ -595,13 +685,16 @@ bool OtaManager::fetchAvailableReleases(bool refresh, String& error) {
     return true;
 }
 
-bool OtaManager::resolveVersionResult(const String& version, CheckResult& result, String& error) {
+bool OtaManager::resolveVersionResult(const String& version, const String& assetName, CheckResult& result, String& error) {
     if (!fetchAvailableReleases(true, error)) {
         return false;
     }
 
     for (const ReleaseInfo& release : releaseCache_) {
         if (release.tag != version) {
+            continue;
+        }
+        if (!assetName.isEmpty() && release.assetName != assetName) {
             continue;
         }
         result.success = true;
@@ -613,7 +706,7 @@ bool OtaManager::resolveVersionResult(const String& version, CheckResult& result
         return true;
     }
 
-    error = String("Release not found: ") + version;
+    error = assetName.isEmpty() ? String("Release not found: ") + version : String("Release asset not found: ") + assetName;
     return false;
 }
 
@@ -721,6 +814,7 @@ OtaManager::CheckResult OtaManager::checkNow() {
 
 bool OtaManager::installNow(const CheckResult& result, String& message) {
     selectedVersion_ = result.latestVersion;
+    selectedAssetName_ = result.assetName;
     updatePhase_ = "Flashing";
     progressBytes_ = 0;
     progressTotalBytes_ = 0;
