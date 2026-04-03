@@ -47,22 +47,26 @@ class AudioPlayer::Impl {
 };
 
 void audio_info(const char* info) {
-    if (g_impl != nullptr && info != nullptr) {
-        g_impl->publish();
-    }
+    (void)info;
 }
 
 void audio_showstation(const char* info) {
     if (g_impl != nullptr && info != nullptr) {
-        g_impl->title = info;
-        g_impl->publish();
+        const String nextTitle = info;
+        if (!nextTitle.isEmpty() && g_impl->title != nextTitle) {
+            g_impl->title = nextTitle;
+            g_impl->publish();
+        }
     }
 }
 
 void audio_showstreamtitle(const char* info) {
     if (g_impl != nullptr && info != nullptr) {
-        g_impl->title = info;
-        g_impl->publish();
+        const String nextTitle = info;
+        if (!nextTitle.isEmpty() && g_impl->title != nextTitle) {
+            g_impl->title = nextTitle;
+            g_impl->publish();
+        }
     }
 }
 
@@ -150,7 +154,11 @@ void AudioPlayer::setVolumePercent(uint8_t volumePercent) {
     if (impl_ == nullptr) {
         return;
     }
-    impl_->volume = constrain(volumePercent, static_cast<uint8_t>(0), static_cast<uint8_t>(100));
+    const uint8_t nextVolume = constrain(volumePercent, static_cast<uint8_t>(0), static_cast<uint8_t>(100));
+    if (impl_->volume == nextVolume) {
+        return;
+    }
+    impl_->volume = nextVolume;
     const uint8_t audioVolume = map(impl_->volume, 0, 100, 0, 21);
     impl_->audio.setVolume(audioVolume);
     impl_->publish();

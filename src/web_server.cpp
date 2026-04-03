@@ -94,9 +94,10 @@ bool WebServerManager::redirectCaptivePortalIfNeeded(AsyncWebServerRequest* requ
 }
 
 void WebServerManager::sendJson(AsyncWebServerRequest* request, const JsonDocument& doc, int statusCode) {
-    String payload;
-    serializeJson(doc, payload);
-    request->send(statusCode, "application/json", payload);
+    AsyncResponseStream* response = request->beginResponseStream("application/json");
+    response->setCode(statusCode);
+    serializeJson(doc, *response);
+    request->send(response);
 }
 
 void WebServerManager::registerApiRoutes() {

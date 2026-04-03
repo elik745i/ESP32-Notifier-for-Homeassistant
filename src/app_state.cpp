@@ -60,6 +60,11 @@ void AppState::setPlayback(const String& state, const String& type, const String
         return;
     }
     xSemaphoreTake(mutex_, portMAX_DELAY);
+    if (state_.playback.state == state && state_.playback.type == type && state_.playback.title == title &&
+        state_.playback.url == url && state_.playback.source == source && state_.playback.volumePercent == volumePercent) {
+        xSemaphoreGive(mutex_);
+        return;
+    }
     state_.playback.state = state;
     state_.playback.type = type;
     state_.playback.title = title;
@@ -101,6 +106,10 @@ void AppState::setLastError(const String& lastError) {
         return;
     }
     xSemaphoreTake(mutex_, portMAX_DELAY);
+    if (state_.system.lastError == lastError) {
+        xSemaphoreGive(mutex_);
+        return;
+    }
     state_.system.lastError = lastError;
     xSemaphoreGive(mutex_);
 }
@@ -110,6 +119,10 @@ void AppState::setFreeHeap(uint32_t freeHeap) {
         return;
     }
     xSemaphoreTake(mutex_, portMAX_DELAY);
+    if (state_.system.freeHeap == freeHeap) {
+        xSemaphoreGive(mutex_);
+        return;
+    }
     state_.system.freeHeap = freeHeap;
     xSemaphoreGive(mutex_);
 }
