@@ -1,11 +1,25 @@
 #include "app_state.h"
 
-AppState::AppState() : mutex_(nullptr) {}
+#include <cstring>
+
+namespace {
+void lockAppState(SemaphoreHandle_t mutex) {
+    if (mutex != nullptr) {
+        xSemaphoreTake(mutex, portMAX_DELAY);
+    }
+}
+
+void unlockAppState(SemaphoreHandle_t mutex) {
+    if (mutex != nullptr) {
+        xSemaphoreGive(mutex);
+    }
+}
+}  // namespace
+
+AppState::AppState() : mutex_(nullptr), mutexBuffer_{} {}
 
 AppState::~AppState() {
-    if (mutex_ != nullptr) {
-        vSemaphoreDelete(mutex_);
-    }
+    mutex_ = nullptr;
 }
 
 bool AppState::begin() {
@@ -17,7 +31,8 @@ bool AppState::ensureMutex() const {
         return true;
     }
 
-    mutex_ = xSemaphoreCreateMutex();
+    memset(&mutexBuffer_, 0, sizeof(mutexBuffer_));
+    mutex_ = xSemaphoreCreateMutexStatic(&mutexBuffer_);
     return mutex_ != nullptr;
 }
 
@@ -25,44 +40,44 @@ void AppState::setDevice(const String& deviceName, const String& friendlyName, b
     if (!ensureMutex()) {
         return;
     }
-    xSemaphoreTake(mutex_, portMAX_DELAY);
+    lockAppState(mutex_);
     state_.device.deviceName = deviceName;
     state_.device.friendlyName = friendlyName;
     state_.settings.usingSaved = usingSaved;
-    xSemaphoreGive(mutex_);
+    unlockAppState(mutex_);
 }
 
 void AppState::setWiFiStatus(bool connected, bool apMode, const String& ssid, const IPAddress& ip, int32_t rssi, const String& apSsid) {
     if (!ensureMutex()) {
         return;
     }
-    xSemaphoreTake(mutex_, portMAX_DELAY);
+    lockAppState(mutex_);
     state_.network.wifiConnected = connected;
     state_.network.apMode = apMode;
     state_.network.ssid = ssid;
     state_.network.ip = ip.toString();
     state_.network.wifiRssi = rssi;
     state_.network.apSsid = apSsid;
-    xSemaphoreGive(mutex_);
+    unlockAppState(mutex_);
 }
 
 void AppState::setMqttConnected(bool connected) {
     if (!ensureMutex()) {
         return;
     }
-    xSemaphoreTake(mutex_, portMAX_DELAY);
+    lockAppState(mutex_);
     state_.network.mqttConnected = connected;
-    xSemaphoreGive(mutex_);
+    unlockAppState(mutex_);
 }
 
 void AppState::setPlayback(const String& state, const String& type, const String& title, const String& url, const String& source, uint8_t volumePercent) {
     if (!ensureMutex()) {
         return;
     }
-    xSemaphoreTake(mutex_, portMAX_DELAY);
+    lockAppState(mutex_);
     if (state_.playback.state == state && state_.playback.type == type && state_.playback.title == title &&
         state_.playback.url == url && state_.playback.source == source && state_.playback.volumePercent == volumePercent) {
-        xSemaphoreGive(mutex_);
+        unlockAppState(mutex_);
         return;
     }
     state_.playback.state = state;
@@ -71,18 +86,18 @@ void AppState::setPlayback(const String& state, const String& type, const String
     state_.playback.url = url;
     state_.playback.source = source;
     state_.playback.volumePercent = volumePercent;
-    xSemaphoreGive(mutex_);
+    unlockAppState(mutex_);
 }
 
 void AppState::setBattery(float voltage, float rawAdcVoltage, uint16_t rawAdc) {
     if (!ensureMutex()) {
         return;
     }
-    xSemaphoreTake(mutex_, portMAX_DELAY);
+    lockAppState(mutex_);
     state_.battery.voltage = voltage;
     state_.battery.rawAdcVoltage = rawAdcVoltage;
     state_.battery.rawAdc = rawAdc;
-    xSemaphoreGive(mutex_);
+    unlockAppState(mutex_);
 }
 
 void AppState::setOta(bool busy, bool updateAvailable, const String& latestVersion, const String& lastResult, const String& lastError,
@@ -90,7 +105,7 @@ void AppState::setOta(bool busy, bool updateAvailable, const String& latestVersi
     if (!ensureMutex()) {
         return;
     }
-    xSemaphoreTake(mutex_, portMAX_DELAY);
+    lockAppState(mutex_);
     state_.ota.busy = busy;
     state_.ota.updateAvailable = updateAvailable;
     state_.ota.latestVersion = latestVersion;
@@ -98,42 +113,42 @@ void AppState::setOta(bool busy, bool updateAvailable, const String& latestVersi
     state_.ota.lastError = lastError;
     state_.ota.phase = phase;
     state_.ota.progressPercent = progressPercent;
-    xSemaphoreGive(mutex_);
+    unlockAppState(mutex_);
 }
 
 void AppState::setLastError(const String& lastError) {
     if (!ensureMutex()) {
         return;
     }
-    xSemaphoreTake(mutex_, portMAX_DELAY);
+    lockAppState(mutex_);
     if (state_.system.lastError == lastError) {
-        xSemaphoreGive(mutex_);
+        unlockAppState(mutex_);
         return;
     }
     state_.system.lastError = lastError;
-    xSemaphoreGive(mutex_);
+    unlockAppState(mutex_);
 }
 
 void AppState::setFreeHeap(uint32_t freeHeap) {
     if (!ensureMutex()) {
         return;
     }
-    xSemaphoreTake(mutex_, portMAX_DELAY);
+    lockAppState(mutex_);
     if (state_.system.freeHeap == freeHeap) {
-        xSemaphoreGive(mutex_);
+        unlockAppState(mutex_);
         return;
     }
     state_.system.freeHeap = freeHeap;
-    xSemaphoreGive(mutex_);
+    unlockAppState(mutex_);
 }
 
 AppStateSnapshot AppState::snapshot() const {
     if (!ensureMutex()) {
         return state_;
     }
-    xSemaphoreTake(mutex_, portMAX_DELAY);
+    lockAppState(mutex_);
     AppStateSnapshot copy = state_;
-    xSemaphoreGive(mutex_);
+    unlockAppState(mutex_);
     return copy;
 }
 

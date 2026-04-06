@@ -23,7 +23,11 @@
 #endif
 
 #ifndef APP_DEFAULT_BUTTON2_PIN
-#define APP_DEFAULT_BUTTON2_PIN 6
+	#if defined(CONFIG_IDF_TARGET_ESP32)
+		#define APP_DEFAULT_BUTTON2_PIN 18
+	#else
+		#define APP_DEFAULT_BUTTON2_PIN 6
+	#endif
 #endif
 
 #ifndef APP_DEFAULT_I2S_DOUT_PIN

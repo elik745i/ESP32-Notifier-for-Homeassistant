@@ -110,6 +110,13 @@ void WebServerManager::registerApiRoutes() {
         JsonObject firmware = doc["firmware"].to<JsonObject>();
         firmware["version"] = APP_VERSION;
         firmware["buildDate"] = APP_BUILD_DATE;
+    #if defined(CONFIG_IDF_TARGET_ESP32S3)
+        firmware["chipFamily"] = "esp32s3";
+    #elif defined(CONFIG_IDF_TARGET_ESP32)
+        firmware["chipFamily"] = "esp32";
+    #else
+        firmware["chipFamily"] = ESP.getChipModel();
+    #endif
     #ifdef APP_DISABLE_AUDIO
         firmware["audioEnabled"] = false;
     #else

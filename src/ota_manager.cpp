@@ -3,6 +3,7 @@
 #include <HTTPClient.h>
 #include <Update.h>
 #include <WiFiClientSecure.h>
+#include <esp_app_format.h>
 #include <mbedtls/sha256.h>
 
 #include "version.h"
@@ -62,6 +63,132 @@ String variantLabelForAssetName(const String& assetName) {
         return "HACS";
     }
     return "Standard";
+}
+
+String normalizeChipFamilyToken(String value) {
+    value.trim();
+    value.toLowerCase();
+    value.replace("-", "");
+    value.replace("_", "");
+    value.replace(" ", "");
+    return value;
+}
+
+String chipFamilyDisplayName(const String& chipFamily) {
+    const String normalized = normalizeChipFamilyToken(chipFamily);
+    if (normalized == "esp32s3") {
+        return "ESP32-S3";
+    }
+    if (normalized == "esp32") {
+        return "ESP32";
+    }
+    return normalized.isEmpty() ? String("unknown target") : chipFamily;
+}
+
+String chipFamilyFromChipId(esp_chip_id_t chipId) {
+    switch (chipId) {
+        case ESP_CHIP_ID_ESP32:
+            return "esp32";
+        case ESP_CHIP_ID_ESP32S3:
+            return "esp32s3";
+        default:
+            return "";
+    }
+}
+
+String chipFamilyForAssetName(const String& assetName) {
+    const String lowered = normalizeChipFamilyToken(assetName);
+    if (lowered.indexOf("esp32s3") >= 0) {
+        return "esp32s3";
+    }
+    if (lowered.indexOf("esp32") >= 0) {
+        return "esp32";
+    }
+    return "";
+}
+
+String currentChipFamily() {
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+    return "esp32s3";
+#elif defined(CONFIG_IDF_TARGET_ESP32)
+    return "esp32";
+#else
+    String model = normalizeChipFamilyToken(ESP.getChipModel());
+    if (model.indexOf("esp32s3") >= 0) {
+        return "esp32s3";
+    }
+    if (model.indexOf("esp32") >= 0) {
+        return "esp32";
+    }
+    return model;
+#endif
+}
+
+bool isCompatibleChipFamily(const String& targetChipFamily) {
+    const String normalized = normalizeChipFamilyToken(targetChipFamily);
+    return normalized.isEmpty() || normalized == currentChipFamily();
+}
+
+String incompatibleChipMessage(const String& targetChipFamily) {
+    return String("Firmware targets ") + chipFamilyDisplayName(targetChipFamily) + ", but this device is " + chipFamilyDisplayName(currentChipFamily()) + ".";
+}
+
+String chipFamilyFromManifest(JsonVariantConst release, const String& assetName, const String& assetUrl) {
+    if (release["chip"].is<const char*>()) {
+        const String chip = normalizeChipFamilyToken(String(static_cast<const char*>(release["chip"])));
+        if (!chip.isEmpty()) {
+            return chip;
+        }
+    }
+    if (release["target"].is<const char*>()) {
+        const String chip = normalizeChipFamilyToken(String(static_cast<const char*>(release["target"])));
+        if (!chip.isEmpty()) {
+            return chip;
+        }
+    }
+    if (release["chipId"].is<uint16_t>()) {
+        const String chip = chipFamilyFromChipId(static_cast<esp_chip_id_t>(release["chipId"].as<uint16_t>()));
+        if (!chip.isEmpty()) {
+            return chip;
+        }
+    }
+    if (release["chip_id"].is<uint16_t>()) {
+        const String chip = chipFamilyFromChipId(static_cast<esp_chip_id_t>(release["chip_id"].as<uint16_t>()));
+        if (!chip.isEmpty()) {
+            return chip;
+        }
+    }
+
+    String chip = chipFamilyForAssetName(assetName);
+    if (!chip.isEmpty()) {
+        return chip;
+    }
+    return chipFamilyForAssetName(assetUrl);
+}
+
+bool validateImageHeader(const uint8_t* data, size_t len, String& chipFamily, String& error) {
+    if (len < sizeof(esp_image_header_t)) {
+        error = "Firmware image header is incomplete.";
+        return false;
+    }
+
+    esp_image_header_t header;
+    memcpy(&header, data, sizeof(header));
+    if (header.magic != ESP_IMAGE_HEADER_MAGIC) {
+        error = "Uploaded file is not a valid ESP32 firmware image.";
+        return false;
+    }
+
+    chipFamily = chipFamilyFromChipId(header.chip_id);
+    if (chipFamily.isEmpty()) {
+        error = "Firmware image does not declare a supported ESP32 target.";
+        return false;
+    }
+    if (!isCompatibleChipFamily(chipFamily)) {
+        error = incompatibleChipMessage(chipFamily);
+        return false;
+    }
+    return true;
 }
 
 void configureTlsClient(WiFiClientSecure& client, bool allowInsecureTls) {
@@ -225,6 +352,9 @@ bool OtaManager::beginLocalUpload(const String& filename, size_t totalSize, Stri
     localUploadStarted_ = true;
     localUploadHadData_ = false;
     localUploadOk_ = false;
+    localUploadHeaderValidated_ = false;
+    localUploadHeaderBytes_ = 0;
+    memset(localUploadHeader_, 0, sizeof(localUploadHeader_));
     busy_ = true;
 
     const size_t updateSize = totalSize > 0 ? totalSize : UPDATE_SIZE_UNKNOWN;
@@ -256,10 +386,36 @@ bool OtaManager::writeLocalUploadChunk(const uint8_t* data, size_t len, String& 
         }
     }
 
-    if (Update.write(const_cast<uint8_t*>(data), len) != len) {
-        error = String("Local firmware update failed: ") + Update.errorString();
-        abortLocalUpload(error);
-        return false;
+    size_t offset = 0;
+    if (!localUploadHeaderValidated_) {
+        const size_t needed = sizeof(localUploadHeader_) - localUploadHeaderBytes_;
+        const size_t toCopy = min(needed, len);
+        memcpy(localUploadHeader_ + localUploadHeaderBytes_, data, toCopy);
+        localUploadHeaderBytes_ += toCopy;
+        offset += toCopy;
+
+        if (localUploadHeaderBytes_ == sizeof(localUploadHeader_)) {
+            String chipFamily;
+            if (!validateImageHeader(localUploadHeader_, localUploadHeaderBytes_, chipFamily, error)) {
+                abortLocalUpload(error);
+                return false;
+            }
+            if (Update.write(localUploadHeader_, localUploadHeaderBytes_) != localUploadHeaderBytes_) {
+                error = String("Local firmware update failed: ") + Update.errorString();
+                abortLocalUpload(error);
+                return false;
+            }
+            localUploadHeaderValidated_ = true;
+        }
+    }
+
+    if (localUploadHeaderValidated_ && offset < len) {
+        const size_t remaining = len - offset;
+        if (Update.write(const_cast<uint8_t*>(data + offset), remaining) != remaining) {
+            error = String("Local firmware update failed: ") + Update.errorString();
+            abortLocalUpload(error);
+            return false;
+        }
     }
 
     progressBytes_ += len;
@@ -282,6 +438,11 @@ bool OtaManager::finishLocalUpload(String& error) {
         abortLocalUpload(error);
         return false;
     }
+    if (!localUploadHeaderValidated_) {
+        error = "Uploaded firmware header is incomplete.";
+        abortLocalUpload(error);
+        return false;
+    }
     if (!Update.end(true)) {
         error = String("Local firmware update failed: ") + Update.errorString();
         abortLocalUpload(error);
@@ -295,6 +456,8 @@ bool OtaManager::finishLocalUpload(String& error) {
 
     localUploadOk_ = true;
     localUploadStarted_ = false;
+    localUploadHeaderValidated_ = false;
+    localUploadHeaderBytes_ = 0;
     busy_ = false;
     progressBytes_ = progressTotalBytes_;
     progressPercent_ = 100;
@@ -311,6 +474,8 @@ void OtaManager::abortLocalUpload(const String& error) {
     localUploadStarted_ = false;
     localUploadHadData_ = false;
     localUploadOk_ = false;
+    localUploadHeaderValidated_ = false;
+    localUploadHeaderBytes_ = 0;
     busy_ = false;
     resetProgress();
     selectedVersion_ = "local";
@@ -333,6 +498,7 @@ void OtaManager::appendStatusJson(JsonObject root) const {
 
 void OtaManager::appendFirmwareInfoJson(JsonObject root, bool refresh, String& error) {
     root["currentVersion"] = normalizeVersion(APP_VERSION);
+    root["currentChip"] = currentChipFamily();
     root["updateBusy"] = busy_;
     root["updateStatus"] = lastMessage_;
     root["selectedVersion"] = selectedVersion_;
@@ -375,6 +541,7 @@ void OtaManager::appendFirmwareInfoJson(JsonObject root, bool refresh, String& e
             item["assetUrl"] = release.assetUrl;
             item["assetName"] = release.assetName;
             item["variantLabel"] = release.variantLabel;
+            item["chipFamily"] = release.chipFamily;
             item["prerelease"] = release.prerelease;
             item["isInstalled"] = release.isInstalled;
             item["isLatest"] = release.isLatest;
@@ -421,6 +588,12 @@ bool OtaManager::triggerInstallVersion(const String& version, const String& asse
     }
     if (version.isEmpty()) {
         error = "Select a firmware release first.";
+        return false;
+    }
+
+    const String targetChipFamily = chipFamilyForAssetName(assetName);
+    if (!isCompatibleChipFamily(targetChipFamily)) {
+        error = incompatibleChipMessage(targetChipFamily);
         return false;
     }
 
@@ -654,14 +827,16 @@ bool OtaManager::fetchAvailableReleases(bool refresh, String& error) {
         const String releaseName = String(static_cast<const char*>(release["name"] | ""));
         const String publishedAt = String(static_cast<const char*>(release["published_at"] | ""));
         const bool prerelease = release["prerelease"] | false;
-        if (latestVersion_.isEmpty() && !prerelease) {
-            latestVersion_ = releaseTag;
-        }
 
         bool matchedAsset = false;
         for (JsonObjectConst asset : release["assets"].as<JsonArrayConst>()) {
             const String assetName = String(static_cast<const char*>(asset["name"] | ""));
             if (!hasBinExtension(assetName)) {
+                continue;
+            }
+
+            const String chipFamily = chipFamilyForAssetName(assetName);
+            if (!isCompatibleChipFamily(chipFamily)) {
                 continue;
             }
 
@@ -675,10 +850,15 @@ bool OtaManager::fetchAvailableReleases(bool refresh, String& error) {
                 item.assetUrl = githubReleaseAssetUrl(settings_, releaseTag, assetName);
             }
             item.variantLabel = variantLabelForAssetName(assetName);
+            item.chipFamily = chipFamily;
             item.prerelease = prerelease;
             item.isInstalled = compareVersions(currentVersion, releaseTag) == 0 && assetName == installedAssetName;
-            item.isLatest = !latestVersion_.isEmpty() && releaseTag == latestVersion_;
+            item.isLatest = false;
             item.isNew = compareVersions(currentVersion, releaseTag) < 0;
+            if (latestVersion_.isEmpty() && !prerelease) {
+                latestVersion_ = releaseTag;
+                item.isLatest = true;
+            }
             releaseCache_.push_back(item);
             matchedAsset = true;
         }
@@ -692,10 +872,17 @@ bool OtaManager::fetchAvailableReleases(bool refresh, String& error) {
             item.assetName = applyVersionTemplate(settings_.ota.assetTemplate, releaseTag);
             item.assetUrl = githubReleaseAssetUrl(settings_, releaseTag, item.assetName);
             item.variantLabel = variantLabelForAssetName(item.assetName);
-            item.isInstalled = compareVersions(currentVersion, releaseTag) == 0 && item.assetName == installedAssetName;
-            item.isLatest = !latestVersion_.isEmpty() && releaseTag == latestVersion_;
-            item.isNew = compareVersions(currentVersion, releaseTag) < 0;
-            releaseCache_.push_back(item);
+            item.chipFamily = chipFamilyForAssetName(item.assetName);
+            if (isCompatibleChipFamily(item.chipFamily)) {
+                item.isInstalled = compareVersions(currentVersion, releaseTag) == 0 && item.assetName == installedAssetName;
+                item.isLatest = false;
+                item.isNew = compareVersions(currentVersion, releaseTag) < 0;
+                if (latestVersion_.isEmpty() && !prerelease) {
+                    latestVersion_ = releaseTag;
+                    item.isLatest = true;
+                }
+                releaseCache_.push_back(item);
+            }
         }
     }
 
@@ -712,6 +899,16 @@ bool OtaManager::resolveVersionResult(const String& version, const String& asset
         return false;
     }
 
+    const String preferredAssetName = assetName.isEmpty() ? currentReleaseAssetName(settings_) : assetName;
+    const ReleaseInfo* fallbackRelease = nullptr;
+    if (!assetName.isEmpty()) {
+        const String targetChipFamily = chipFamilyForAssetName(assetName);
+        if (!isCompatibleChipFamily(targetChipFamily)) {
+            error = incompatibleChipMessage(targetChipFamily);
+            return false;
+        }
+    }
+
     for (const ReleaseInfo& release : releaseCache_) {
         if (release.tag != version) {
             continue;
@@ -719,11 +916,28 @@ bool OtaManager::resolveVersionResult(const String& version, const String& asset
         if (!assetName.isEmpty() && release.assetName != assetName) {
             continue;
         }
+        if (release.assetName == preferredAssetName) {
+            result.success = true;
+            result.latestVersion = release.tag;
+            result.assetName = release.assetName;
+            result.assetUrl = release.assetUrl;
+            result.checksumSha256 = "";
+            result.updateAvailable = compareVersions(normalizeVersion(APP_VERSION), release.tag) < 0;
+            result.message = result.updateAvailable ? "update available" : "selected release ready";
+            return true;
+        }
+        if (fallbackRelease == nullptr) {
+            fallbackRelease = &release;
+        }
+    }
+
+    if (fallbackRelease != nullptr) {
         result.success = true;
-        result.latestVersion = release.tag;
-        result.assetName = release.assetName;
-        result.assetUrl = release.assetUrl;
-        result.updateAvailable = compareVersions(normalizeVersion(APP_VERSION), release.tag) < 0;
+        result.latestVersion = fallbackRelease->tag;
+        result.assetName = fallbackRelease->assetName;
+        result.assetUrl = fallbackRelease->assetUrl;
+        result.checksumSha256 = "";
+        result.updateAvailable = compareVersions(normalizeVersion(APP_VERSION), fallbackRelease->tag) < 0;
         result.message = result.updateAvailable ? "update available" : "selected release ready";
         return true;
     }
@@ -783,6 +997,11 @@ OtaManager::CheckResult OtaManager::checkNow() {
                 return result;
             }
         }
+        const String targetChipFamily = chipFamilyFromManifest(release, result.assetName, result.assetUrl);
+        if (!isCompatibleChipFamily(targetChipFamily)) {
+            result.message = incompatibleChipMessage(targetChipFamily);
+            return result;
+        }
     } else {
         const int code = beginAndGet(
             http,
@@ -811,7 +1030,7 @@ OtaManager::CheckResult OtaManager::checkNow() {
         }
         http.end();
         result.latestVersion = normalizeVersion(String(static_cast<const char*>(doc["tag_name"] | "")));
-        result.assetName = applyVersionTemplate(settings_.ota.assetTemplate, result.latestVersion);
+        result.assetName = currentReleaseAssetName(settings_);
         for (JsonObject asset : doc["assets"].as<JsonArray>()) {
             const String name = String(static_cast<const char*>(asset["name"] | ""));
             if (name == result.assetName) {
@@ -880,6 +1099,9 @@ bool OtaManager::installNow(const CheckResult& result, String& message) {
 
     WiFiClient* stream = http.getStreamPtr();
     uint8_t buffer[1024];
+    uint8_t imageHeader[sizeof(esp_image_header_t)] = {0};
+    size_t imageHeaderBytes = 0;
+    bool imageHeaderValidated = false;
     int written = 0;
     while (http.connected() && written < contentLength) {
         const size_t available = stream->available();
@@ -893,12 +1115,43 @@ bool OtaManager::installNow(const CheckResult& result, String& message) {
             continue;
         }
         mbedtls_sha256_update_ret(&sha, buffer, read);
-        if (Update.write(buffer, read) != static_cast<size_t>(read)) {
-            message = "OTA write failed";
-            Update.abort();
-            http.end();
-            mbedtls_sha256_free(&sha);
-            return false;
+
+        size_t offset = 0;
+        if (!imageHeaderValidated) {
+            const size_t needed = sizeof(imageHeader) - imageHeaderBytes;
+            const size_t toCopy = min(needed, static_cast<size_t>(read));
+            memcpy(imageHeader + imageHeaderBytes, buffer, toCopy);
+            imageHeaderBytes += toCopy;
+            offset += toCopy;
+
+            if (imageHeaderBytes == sizeof(imageHeader)) {
+                String chipFamily;
+                if (!validateImageHeader(imageHeader, imageHeaderBytes, chipFamily, message)) {
+                    Update.abort();
+                    http.end();
+                    mbedtls_sha256_free(&sha);
+                    return false;
+                }
+                if (Update.write(imageHeader, imageHeaderBytes) != imageHeaderBytes) {
+                    message = "OTA write failed";
+                    Update.abort();
+                    http.end();
+                    mbedtls_sha256_free(&sha);
+                    return false;
+                }
+                imageHeaderValidated = true;
+            }
+        }
+
+        if (imageHeaderValidated && offset < static_cast<size_t>(read)) {
+            const size_t remaining = static_cast<size_t>(read) - offset;
+            if (Update.write(buffer + offset, remaining) != remaining) {
+                message = "OTA write failed";
+                Update.abort();
+                http.end();
+                mbedtls_sha256_free(&sha);
+                return false;
+            }
         }
         written += read;
         progressBytes_ = static_cast<size_t>(written);
@@ -906,6 +1159,14 @@ bool OtaManager::installNow(const CheckResult& result, String& message) {
         lastMessage_ = String("Flashing firmware... ") + progressPercent_ + "%";
         syncAppState("updating");
         pumpProgressCallback();
+    }
+
+    if (!imageHeaderValidated) {
+        message = "Firmware image header is incomplete.";
+        Update.abort();
+        http.end();
+        mbedtls_sha256_free(&sha);
+        return false;
     }
 
     uint8_t digest[32];

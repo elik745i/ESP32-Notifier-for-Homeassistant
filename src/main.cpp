@@ -249,11 +249,6 @@ const char* resetReasonToString(esp_reset_reason_t reason) {
     }
 }
 
-void logBootStage(const char* stage) {
-    Serial.printf("[boot] %s\n", stage);
-    Serial.flush();
-}
-
 void scheduleReboot(uint32_t delayMs) {
     rebootRequested = true;
     rebootAt = millis() + delayMs;
@@ -672,7 +667,26 @@ bool playRequest(const String& url, const String& label, const String& type, con
 }
 
 void handleMqttCommand(const PlaybackCommand& command) {
-    if (command.action == "stop" || command.action == "pause") {
+    if (command.action == "ota_check") {
+        if (otaManager != nullptr && otaManager->triggerCheck(false)) {
+            appState->setLastError("");
+        } else {
+            appState->setLastError("OTA check request was rejected.");
+        }
+    } else if (command.action == "ota_install_latest") {
+        if (otaManager != nullptr && otaManager->triggerCheck(true)) {
+            appState->setLastError("");
+        } else {
+            appState->setLastError("OTA install request was rejected.");
+        }
+    } else if (command.action == "ota_install") {
+        String error;
+        if (otaManager != nullptr && otaManager->triggerInstallVersion(command.version, command.assetName, error)) {
+            appState->setLastError("");
+        } else {
+            appState->setLastError(error.isEmpty() ? String("OTA install request was rejected.") : error);
+        }
+    } else if (command.action == "stop" || command.action == "pause") {
         audioPlayer->stop();
     } else if (command.action == "volume") {
         settings->device.savedVolumePercent = command.volumePercent;
@@ -771,7 +785,6 @@ void setup() {
     Serial.printf("[boot] reset reason=%s (%d)\n", resetReasonToString(resetReason), static_cast<int>(resetReason));
     Serial.flush();
 
-    logBootStage("construct runtime objects");
     if (!initializeRuntimeObjects()) {
         Serial.println("[boot] failed to construct runtime objects");
         Serial.flush();
@@ -779,7 +792,6 @@ void setup() {
         ESP.restart();
     }
 
-    logBootStage("app state mutex");
     if (!appState->begin()) {
         Serial.println("[boot] failed to initialize app state mutex");
         Serial.flush();
@@ -790,37 +802,26 @@ void setup() {
     pinMode(DefaultConfig::STATUS_LED_PIN, OUTPUT);
     digitalWrite(DefaultConfig::STATUS_LED_PIN, LOW);
 
-    logBootStage("settings begin");
     settingsManager->begin();
     *settings = settingsManager->load();
 
-    logBootStage("display begin");
     displayManager->begin(settings->oled);
     displayManager->setBootMessage("Booting");
 
-    logBootStage("app state init");
     appState->setDevice(settings->device.deviceName, settings->device.friendlyName, settings->usingSavedSettings);
 
-    logBootStage("wifi begin");
     wifiManager->begin(*settings, *appState);
 
-    logBootStage("battery begin");
     batteryMonitor->begin(settings->battery, DefaultConfig::BATTERY_ADC_PIN, *appState);
 
-    logBootStage("audio begin");
     audioPlayer->begin(DefaultConfig::I2S_BCLK_PIN, DefaultConfig::I2S_WS_PIN, DefaultConfig::I2S_DOUT_PIN, settings->device.savedVolumePercent, *appState);
 
-    logBootStage("sound effects begin");
     soundEffects->begin(*settings);
-
-    logBootStage("ota begin");
     otaManager->begin(*settings, *appState);
     otaManager->setProgressCallback(pumpOtaDisplayProgress);
 
-    logBootStage("mqtt begin");
     mqttManager->begin(*settings, *appState, *wifiManager, handleMqttCommand);
 
-    logBootStage("web begin");
     webServer->begin(
         *appState,
         *wifiManager,
@@ -851,7 +852,6 @@ void setup() {
 
     displayManager->setBootMessage("Idle");
     soundEffects->playBoot();
-    logBootStage("setup complete");
 }
 
 void processSoundEffectTransitions(const AppStateSnapshot& snapshot) {

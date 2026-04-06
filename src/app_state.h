@@ -86,5 +86,6 @@ class AppState {
   private:
         bool ensureMutex() const;
     mutable SemaphoreHandle_t mutex_;
+    mutable StaticSemaphore_t mutexBuffer_;
     AppStateSnapshot state_;
 };

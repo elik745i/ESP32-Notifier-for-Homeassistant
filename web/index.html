@@ -320,7 +320,7 @@
                 <label class="oled-button-control oled-button-control-right">
                   <span class="oled-button-title">Button 2</span>
                   <select form="settingsForm" name="device.button2Action"></select>
-                  <small>GPIO6, right side</small>
+                  <small>GPIO6 on ESP32-S3, GPIO18 on ESP32</small>
                 </label>
               </div>
             </div>
@@ -367,7 +367,7 @@
               </label>
               <div></div>
             </div>
-            <p class="note">GPIO5 and GPIO6 are treated as active-high touch/button inputs. Button 1 defaults to Previous Track and Button 2 defaults to Next Track. The Home Assistant Previous and Next actions publish MQTT events on the button-action topic so you can bind those touches to Home Assistant automations. When rotated 90 or 270 degrees the renderer automatically uses the effective portrait resolution so text and OTA progress fit the rotated screen.</p>
+            <p class="note">Button 1 defaults to GPIO5. Button 2 defaults to GPIO6 on ESP32-S3 builds and GPIO18 on regular ESP32 builds, because GPIO6 is part of the flash bus on ESP32. Both inputs are treated as active-high touch/button inputs, and the Home Assistant Previous and Next actions publish MQTT events on the button-action topic so you can bind those touches to Home Assistant automations. When rotated 90 or 270 degrees the renderer automatically uses the effective portrait resolution so text and OTA progress fit the rotated screen.</p>
           </form>
         </div>
 

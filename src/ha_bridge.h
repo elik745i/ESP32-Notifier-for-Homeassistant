@@ -10,6 +10,8 @@ struct PlaybackCommand {
     String label;
     String source;
     String mediaType;
+    String version;
+    String assetName;
     uint8_t volumePercent = 0;
 };
 
@@ -19,6 +21,7 @@ String availabilityTopic(const SettingsBundle& settings);
 String playbackStateTopic(const SettingsBundle& settings);
 String networkStateTopic(const SettingsBundle& settings);
 String batteryStateTopic(const SettingsBundle& settings);
+String otaStateTopic(const SettingsBundle& settings);
 #ifdef APP_ENABLE_HACS_MQTT
 String hacsMediaPlayerDiscoveryTopic(const SettingsBundle& settings);
 String hacsMediaPlayerStateTopic(const SettingsBundle& settings, const char* field);

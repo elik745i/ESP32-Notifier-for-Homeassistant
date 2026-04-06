@@ -40,6 +40,10 @@ String batteryStateTopic(const SettingsBundle& settings) {
     return settings.mqtt.baseTopic + "/state/battery";
 }
 
+String otaStateTopic(const SettingsBundle& settings) {
+    return settings.mqtt.baseTopic + "/state/ota";
+}
+
 #ifdef APP_ENABLE_HACS_MQTT
 String hacsMediaPlayerDiscoveryTopic(const SettingsBundle& settings) {
     return baseDiscoveryPrefix() + "/media_player/" + settings.device.deviceName + "/config";

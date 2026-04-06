@@ -26,11 +26,15 @@ const state = {
   mqttConnectInProgress: false,
   mqttActionInProgress: "",
   stationRedirectInProgress: false,
+  oledPreviewScrollTimer: null,
+  oledPreviewScrollSignature: "",
+  oledPreviewScrollOffset: 0,
 };
 
 const SETTINGS_AUTOSAVE_DELAY_MS = 900;
 const ACTIVE_TAB_STORAGE_KEY = "notifierActiveTab";
 const RADIO_SELECTION_STORAGE_KEY = "notifierRadioSelection";
+const OLED_PREVIEW_SCROLL_INTERVAL_MS = 300;
 
 const elements = {
   deviceTitle: document.getElementById("deviceTitle"),
@@ -792,6 +796,75 @@ function truncateOledText(text, maxChars) {
   return `${value.slice(0, Math.max(0, maxChars - 1))}~`;
 }
 
+function oledScrollWindow(text, maxChars, offset) {
+  const value = String(text || "");
+  if (value.length <= maxChars) {
+    return value;
+  }
+
+  const padded = `${value}   `;
+  const start = offset % padded.length;
+  if (start + maxChars <= padded.length) {
+    return padded.slice(start, start + maxChars);
+  }
+
+  const end = (start + maxChars) - padded.length;
+  return `${padded.slice(start)}${padded.slice(0, end)}`;
+}
+
+function stopOledPreviewScroll(centerNode) {
+  if (state.oledPreviewScrollTimer) {
+    clearInterval(state.oledPreviewScrollTimer);
+    state.oledPreviewScrollTimer = null;
+  }
+  state.oledPreviewScrollSignature = "";
+  state.oledPreviewScrollOffset = 0;
+  if (centerNode) {
+    centerNode.dataset.scrollText = "";
+    centerNode.dataset.scrollChars = "";
+  }
+}
+
+function renderOledPreviewCenter(centerNode, text, maxChars, hidden) {
+  if (!centerNode) {
+    stopOledPreviewScroll(null);
+    return;
+  }
+
+  centerNode.hidden = hidden;
+  if (hidden) {
+    centerNode.textContent = "";
+    stopOledPreviewScroll(centerNode);
+    return;
+  }
+
+  const value = String(text || "");
+  if (value.length <= maxChars) {
+    centerNode.textContent = truncateOledText(value, maxChars);
+    stopOledPreviewScroll(centerNode);
+    return;
+  }
+
+  const signature = `${value}\n${maxChars}`;
+  if (state.oledPreviewScrollSignature !== signature) {
+    stopOledPreviewScroll(centerNode);
+    state.oledPreviewScrollSignature = signature;
+  }
+
+  centerNode.dataset.scrollText = value;
+  centerNode.dataset.scrollChars = String(maxChars);
+
+  const drawFrame = () => {
+    centerNode.textContent = oledScrollWindow(value, maxChars, state.oledPreviewScrollOffset);
+    state.oledPreviewScrollOffset = (state.oledPreviewScrollOffset + 1) % (`${value}   `.length);
+  };
+
+  drawFrame();
+  if (!state.oledPreviewScrollTimer) {
+    state.oledPreviewScrollTimer = setInterval(drawFrame, OLED_PREVIEW_SCROLL_INTERVAL_MS);
+  }
+}
+
 function oledCenterText(status) {
   if (!status) {
     return "Idle";
@@ -851,8 +924,7 @@ function renderOledPreview() {
     topNode.textContent = truncateOledText(top, topChars);
   }
   if (centerNode) {
-    centerNode.textContent = truncateOledText(center, centerChars);
-    centerNode.hidden = isUpdating;
+    renderOledPreviewCenter(centerNode, center, centerChars, isUpdating);
     centerNode.style.top = `${(centerTop / effectiveHeight) * 100}%`;
     centerNode.style.height = `${(centerHeight / effectiveHeight) * 100}%`;
   }

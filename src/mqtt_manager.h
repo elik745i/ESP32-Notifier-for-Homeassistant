@@ -41,6 +41,9 @@ class MqttManager {
     bool configured_ = false;
     bool connectionEnabled_ = true;
     bool recoveryRebootRecommended_ = false;
+    bool discoveryPublishPending_ = false;
+    bool statePublishPending_ = false;
+    bool discoveryPublishedForSession_ = false;
     bool wifiWasConnected_ = false;
     uint8_t consecutiveFailureCount_ = 0;
     unsigned long lastConnectAttemptAt_ = 0;

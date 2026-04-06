@@ -1,5 +1,7 @@
 #include "mqtt_manager.h"
 
+#include "version.h"
+
 namespace {
 String payloadToString(char* payload, size_t len) {
     String value;
@@ -105,11 +107,18 @@ void MqttManager::begin(const SettingsBundle& settings, AppState& appState, WiFi
 }
 
 void MqttManager::applySettings(const SettingsBundle& settings) {
+    const bool discoverySettingsChanged = !configured_ ||
+        settings_.mqtt.discoveryEnabled != settings.mqtt.discoveryEnabled ||
+        settings_.device.friendlyName != settings.device.friendlyName ||
+        settings_.mqtt.baseTopic != settings.mqtt.baseTopic;
     const bool needsReconfigure = !configured_ || mqttReconnectRequired(settings_, settings) || !client_.connected();
     settings_ = settings;
     if (settings_.mqtt.host.isEmpty()) {
         consecutiveFailureCount_ = 0;
         recoveryRebootRecommended_ = false;
+    }
+    if (discoverySettingsChanged) {
+        discoveryPublishedForSession_ = false;
     }
     if (needsReconfigure) {
         configureClient();
@@ -118,8 +127,10 @@ void MqttManager::applySettings(const SettingsBundle& settings) {
     }
 
     if (client_.connected()) {
-        publishDiscovery();
-        publishState();
+        if (settings_.mqtt.discoveryEnabled && !discoveryPublishedForSession_) {
+            discoveryPublishPending_ = true;
+        }
+        statePublishPending_ = true;
     }
 }
 
@@ -157,6 +168,17 @@ void MqttManager::configureClient() {
 void MqttManager::loop() {
     handleWiFiState();
     connectIfNeeded();
+    if (client_.connected()) {
+        if (discoveryPublishPending_ && settings_.mqtt.discoveryEnabled) {
+            publishDiscovery();
+            discoveryPublishPending_ = false;
+            discoveryPublishedForSession_ = true;
+        }
+        if (statePublishPending_) {
+            publishState();
+            statePublishPending_ = false;
+        }
+    }
     if (client_.connected() && lastBrokerActivityAt_ != 0 && millis() - lastBrokerActivityAt_ > MQTT_STALE_CONNECTION_MS) {
         Serial.printf("[mqtt] no broker activity for %lu ms, forcing reconnect\n",
                       static_cast<unsigned long>(MQTT_STALE_CONNECTION_MS));
@@ -227,6 +249,9 @@ void MqttManager::handleConnected(bool sessionPresent) {
     client_.subscribe(HaBridge::commandTopic(settings_, "tts").c_str(), 1);
     client_.subscribe(HaBridge::commandTopic(settings_, "stop").c_str(), 1);
     client_.subscribe(HaBridge::commandTopic(settings_, "volume").c_str(), 1);
+    client_.subscribe(HaBridge::commandTopic(settings_, "ota/check").c_str(), 1);
+    client_.subscribe(HaBridge::commandTopic(settings_, "ota/install").c_str(), 1);
+    client_.subscribe(HaBridge::commandTopic(settings_, "ota/install_version").c_str(), 1);
 #ifdef APP_ENABLE_HACS_MQTT
     client_.subscribe(HaBridge::hacsMediaPlayerCommandTopic(settings_, "play").c_str(), 1);
     client_.subscribe(HaBridge::hacsMediaPlayerCommandTopic(settings_, "pause").c_str(), 1);
@@ -237,8 +262,10 @@ void MqttManager::handleConnected(bool sessionPresent) {
     client_.subscribe(HaBridge::hacsMediaPlayerCommandTopic(settings_, "volume").c_str(), 1);
     client_.subscribe(HaBridge::hacsMediaPlayerCommandTopic(settings_, "playmedia").c_str(), 1);
 #endif
-    publishDiscovery();
-    publishState();
+    if (settings_.mqtt.discoveryEnabled && !discoveryPublishedForSession_) {
+        discoveryPublishPending_ = true;
+    }
+    statePublishPending_ = true;
 }
 
 void MqttManager::handleDisconnected(AsyncMqttClientDisconnectReason reason) {
@@ -323,6 +350,45 @@ void MqttManager::handleMessage(char* topic, char* payload, AsyncMqttClientMessa
         return;
     }
 
+    if (topicValue == HaBridge::commandTopic(settings_, "ota/check")) {
+        command.action = "ota_check";
+        commandHandler_(command);
+        return;
+    }
+
+    if (topicValue == HaBridge::commandTopic(settings_, "ota/install")) {
+        if (payloadValue.isEmpty() || payloadValue.equalsIgnoreCase("latest") || payloadValue.equalsIgnoreCase("install")) {
+            command.action = "ota_install_latest";
+        } else if (payloadValue.startsWith("{")) {
+            JsonDocument doc;
+            if (deserializeJson(doc, payloadValue) == DeserializationError::Ok) {
+                command.version = String(static_cast<const char*>(doc["version"] | doc["tag"] | ""));
+                command.assetName = String(static_cast<const char*>(doc["assetName"] | doc["asset"] | ""));
+            }
+            command.action = command.version.isEmpty() ? "ota_install_latest" : "ota_install";
+        } else {
+            command.action = "ota_install";
+            command.version = payloadValue;
+        }
+        commandHandler_(command);
+        return;
+    }
+
+    if (topicValue == HaBridge::commandTopic(settings_, "ota/install_version")) {
+        command.action = "ota_install";
+        if (payloadValue.startsWith("{")) {
+            JsonDocument doc;
+            if (deserializeJson(doc, payloadValue) == DeserializationError::Ok) {
+                command.version = String(static_cast<const char*>(doc["version"] | doc["tag"] | ""));
+                command.assetName = String(static_cast<const char*>(doc["assetName"] | doc["asset"] | ""));
+            }
+        } else {
+            command.version = payloadValue;
+        }
+        commandHandler_(command);
+        return;
+    }
+
     if (command.action.isEmpty()) {
         command.action = topicValue.endsWith("/tts") ? "tts" : "play";
     }
@@ -391,6 +457,17 @@ void MqttManager::publishState() {
     battery["rawAdc"] = snapshot.battery.rawAdc;
     publishJson(HaBridge::batteryStateTopic(settings_), battery, true);
 
+    JsonDocument ota;
+    ota["busy"] = snapshot.ota.busy;
+    ota["updateAvailable"] = snapshot.ota.updateAvailable;
+    ota["latestVersion"] = snapshot.ota.latestVersion;
+    ota["lastResult"] = snapshot.ota.lastResult;
+    ota["lastError"] = snapshot.ota.lastError;
+    ota["phase"] = snapshot.ota.phase;
+    ota["progressPercent"] = snapshot.ota.progressPercent;
+    ota["currentVersion"] = APP_VERSION;
+    publishJson(HaBridge::otaStateTopic(settings_), ota, true);
+
     client_.publish((settings_.mqtt.baseTopic + "/state/volume").c_str(), 1, true, String(snapshot.playback.volumePercent).c_str());
 #ifdef APP_ENABLE_HACS_MQTT
     client_.publish(HaBridge::hacsMediaPlayerStateTopic(settings_, "state").c_str(), 1, true, normalizedHacsPlaybackState(snapshot.playback.state).c_str());
@@ -425,14 +502,26 @@ void MqttManager::publishDiscovery() {
         HaBridge::discoveryTopic(settings_, "sensor", "playback_state").c_str(), 1, true,
         HaBridge::discoveryPayloadSensor(settings_, "playback_state", "Playback State", HaBridge::playbackStateTopic(settings_).c_str(), "{{ value_json.state }}", nullptr, nullptr, nullptr, "mdi:speaker-wireless").c_str());
     client_.publish(
+        HaBridge::discoveryTopic(settings_, "sensor", "firmware_ota_status").c_str(), 1, true,
+        HaBridge::discoveryPayloadSensor(settings_, "firmware_ota_status", "Firmware OTA Status", HaBridge::otaStateTopic(settings_).c_str(), "{{ value_json.phase if value_json.busy else (value_json.lastError if value_json.lastError else value_json.lastResult) }}", nullptr, nullptr, nullptr, "mdi:update").c_str());
+    client_.publish(
         HaBridge::discoveryTopic(settings_, "number", "volume").c_str(), 1, true,
         HaBridge::discoveryPayloadNumber(settings_, "volume", "Notifier Volume", (settings_.mqtt.baseTopic + "/state/volume").c_str(), HaBridge::commandTopic(settings_, "volume").c_str(), 0, 100, 1, "%", "mdi:volume-high").c_str());
     client_.publish(
         HaBridge::discoveryTopic(settings_, "button", "stop").c_str(), 1, true,
         HaBridge::discoveryPayloadButton(settings_, "stop", "Stop Playback", HaBridge::commandTopic(settings_, "stop").c_str(), "stop", "mdi:stop").c_str());
     client_.publish(
+        HaBridge::discoveryTopic(settings_, "button", "firmware_check").c_str(), 1, true,
+        HaBridge::discoveryPayloadButton(settings_, "firmware_check", "Check Firmware Releases", HaBridge::commandTopic(settings_, "ota/check").c_str(), "check", "mdi:update").c_str());
+    client_.publish(
+        HaBridge::discoveryTopic(settings_, "button", "firmware_install_latest").c_str(), 1, true,
+        HaBridge::discoveryPayloadButton(settings_, "firmware_install_latest", "Install Latest Firmware", HaBridge::commandTopic(settings_, "ota/install").c_str(), "latest", "mdi:package-up").c_str());
+    client_.publish(
         HaBridge::discoveryTopic(settings_, "text", "play_url").c_str(), 1, true,
         HaBridge::discoveryPayloadText(settings_, "play_url", "Play URL", HaBridge::commandTopic(settings_, "play").c_str(), "mdi:link").c_str());
+    client_.publish(
+        HaBridge::discoveryTopic(settings_, "text", "firmware_install_version").c_str(), 1, true,
+        HaBridge::discoveryPayloadText(settings_, "firmware_install_version", "Install Firmware Version", HaBridge::commandTopic(settings_, "ota/install_version").c_str(), "mdi:tag-arrow-up").c_str());
 #ifdef APP_ENABLE_HACS_MQTT
     client_.publish(
         HaBridge::hacsMediaPlayerDiscoveryTopic(settings_).c_str(), 1, true,
@@ -477,8 +566,10 @@ bool MqttManager::requestConnect(String& error) {
 
     connectionEnabled_ = true;
     if (client_.connected()) {
-        publishDiscovery();
-        publishState();
+        if (settings_.mqtt.discoveryEnabled && !discoveryPublishedForSession_) {
+            discoveryPublishPending_ = true;
+        }
+        statePublishPending_ = true;
         return true;
     }
 

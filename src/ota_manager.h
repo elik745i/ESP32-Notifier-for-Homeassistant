@@ -40,12 +40,13 @@ class OtaManager {
         String publishedAt;
         String assetUrl;
         String assetName;
-          String variantLabel;
+        String variantLabel;
+        String chipFamily;
         bool prerelease = false;
-          bool isInstalled = false;
+        bool isInstalled = false;
         bool isLatest = false;
         bool isNew = false;
-      };
+    };
 
     SettingsBundle settings_;
     AppState* appState_ = nullptr;
@@ -72,11 +73,14 @@ class OtaManager {
     bool localUploadStarted_ = false;
     bool localUploadHadData_ = false;
     bool localUploadOk_ = false;
+    bool localUploadHeaderValidated_ = false;
+    size_t localUploadHeaderBytes_ = 0;
     bool rebootPending_ = false;
     unsigned long rebootAtMs_ = 0;
     std::vector<ReleaseInfo> releaseCache_;
     unsigned long releasesFetchedAtMs_ = 0;
     void (*progressCallback_)() = nullptr;
+    uint8_t localUploadHeader_[24] = {0};
 
     void runTask(bool applyAfterCheck);
     void runReleaseRefreshTask();
