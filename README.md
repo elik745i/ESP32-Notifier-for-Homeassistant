@@ -48,10 +48,14 @@ The repository builds successfully with PlatformIO and emits [firmware.bin](.pio
 
 Current firmware version in this repository:
 
-- `v0.1.9`
+- `v0.1.10`
 
 Recent firmware and web UI updates included in this version:
 
+- Home Assistant MQTT discovery now publishes the device Visit URL using the current IP or AP address instead of an unreachable `.local` hostname
+- Home Assistant MQTT text controls for Play URL and Install Firmware Version now publish retained state instead of showing `unknown`
+- Firmware release checks now expose installed version, latest compatible version, and compatible build summaries to Home Assistant controls and sensors
+- OTA state changes now republish MQTT state during async checks and installs so Home Assistant updates promptly
 - documentation now covers the Notifier V3 hardware build based on the ESP32-S3 Super Mini, PCM5102 DAC, dual TTP223 touch sensors, buzzer, and 0.96 inch OLED
 - added the Notifier V3 circuit diagram and direct casing STL references to the repository documentation
 - added a PCM5102 bring-up tutorial reference and jumper guidance for the common purple PCM5102 breakout used by this build
@@ -475,9 +479,9 @@ Recommended manifest shape:
 
 ```json
 {
-  "version": "v0.1.9",
-  "url": "https://github.com/elik745i/ESP32-Notifier-for-Homeassistant/releases/download/v0.1.9/esp32-notifier-v0.1.9.bin",
-  "asset": "esp32-notifier-v0.1.9.bin",
+  "version": "v0.1.10",
+  "url": "https://github.com/elik745i/ESP32-Notifier-for-Homeassistant/releases/download/v0.1.10/esp32-notifier-v0.1.10.bin",
+  "asset": "esp32-notifier-v0.1.10.bin",
   "sha256": "<optional sha256>",
   "channel": "stable"
 }
@@ -609,11 +613,11 @@ The repository currently defines these release-oriented PlatformIO environments:
 - `esp32s3_notifier`
 - `esp32s3_notifier_hacs`
 
-Recommended release asset names for `v0.1.9`:
+Recommended release asset names for `v0.1.10`:
 
-- `esp32-notifier-v0.1.9.bin`
-- `esp32-notifier-hacs-v0.1.9.bin`
-- `esp32-notifier-hacs-slim-v0.1.9.bin`
-- `esp32s3-notifier-v0.1.9.bin`
-- `esp32s3-notifier-hacs-v0.1.9.bin`
+- `esp32-notifier-v0.1.10.bin`
+- `esp32-notifier-hacs-v0.1.10.bin`
+- `esp32-notifier-hacs-slim-v0.1.10.bin`
+- `esp32s3-notifier-v0.1.10.bin`
+- `esp32s3-notifier-hacs-v0.1.10.bin`
 

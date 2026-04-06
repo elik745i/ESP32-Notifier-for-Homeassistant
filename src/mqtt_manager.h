@@ -7,6 +7,7 @@
 
 #include "app_state.h"
 #include "ha_bridge.h"
+#include "ota_manager.h"
 #include "settings_schema.h"
 #include "wifi_manager.h"
 
@@ -14,7 +15,7 @@ class MqttManager {
   public:
     using CommandHandler = std::function<void(const PlaybackCommand& command)>;
 
-    void begin(const SettingsBundle& settings, AppState& appState, WiFiManager& wifiManager, CommandHandler commandHandler);
+    void begin(const SettingsBundle& settings, AppState& appState, WiFiManager& wifiManager, OtaManager& otaManager, CommandHandler commandHandler);
     void applySettings(const SettingsBundle& settings);
     void loop();
     void publishState();
@@ -37,6 +38,7 @@ class MqttManager {
     SettingsBundle settings_;
     AppState* appState_ = nullptr;
     WiFiManager* wifiManager_ = nullptr;
+    OtaManager* otaManager_ = nullptr;
     CommandHandler commandHandler_;
     bool configured_ = false;
     bool connectionEnabled_ = true;
@@ -57,6 +59,7 @@ class MqttManager {
     void handleDisconnected(AsyncMqttClientDisconnectReason reason);
     void handleMessage(char* topic, char* payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total);
     void publishJson(const String& topic, const JsonDocument& doc, bool retained);
+    String currentConfigUrl() const;
     void noteBrokerActivity();
     bool isCredentialFailureReason(AsyncMqttClientDisconnectReason reason) const;
     void clearFrontendError();

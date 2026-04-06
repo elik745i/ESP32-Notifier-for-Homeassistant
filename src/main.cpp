@@ -191,9 +191,11 @@ unsigned long lastHeapUpdateAt = 0;
 bool recoveryRebootScheduled = false;
 bool wokeFromDeepSleep = false;
 unsigned long lowBatteryWakeStartedAt = 0;
+unsigned long lastOtaMqttPublishAt = 0;
 bool previousWifiConnected = false;
 bool previousMqttConnected = false;
 String previousPlaybackState = "idle";
+String lastPublishedOtaSignature;
 bool transitionStateInitialized = false;
 
 constexpr float kBatteryPercentEmptyVoltage = 3.2f;
@@ -820,7 +822,7 @@ void setup() {
     otaManager->begin(*settings, *appState);
     otaManager->setProgressCallback(pumpOtaDisplayProgress);
 
-    mqttManager->begin(*settings, *appState, *wifiManager, handleMqttCommand);
+    mqttManager->begin(*settings, *appState, *wifiManager, *otaManager, handleMqttCommand);
 
     webServer->begin(
         *appState,
@@ -907,6 +909,17 @@ void loop() {
     processSoundEffectTransitions(snapshot);
     displayManager->loop(snapshot);
     handleLowBatterySleepPolicy(snapshot);
+
+    const String otaSignature = String(snapshot.ota.busy ? '1' : '0') + "|" + snapshot.ota.latestVersion + "|" +
+        snapshot.ota.lastResult + "|" + snapshot.ota.lastError + "|" + snapshot.ota.phase + "|" + snapshot.ota.progressPercent;
+    if (mqttManager->isConnected() && otaSignature != lastPublishedOtaSignature) {
+        const unsigned long now = millis();
+        if ((now - lastOtaMqttPublishAt) >= 500UL || !snapshot.ota.busy) {
+            lastPublishedOtaSignature = otaSignature;
+            lastOtaMqttPublishAt = now;
+            mqttManager->publishState();
+        }
+    }
 
     if (millis() - lastHeapUpdateAt > 5000UL) {
         lastHeapUpdateAt = millis();

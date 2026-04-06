@@ -30,10 +30,10 @@ String hacsMediaPlayerCommandTopic(const SettingsBundle& settings, const char* c
 String commandTopic(const SettingsBundle& settings, const char* command);
 String entityUniqueId(const SettingsBundle& settings, const char* suffix);
 String discoveryTopic(const SettingsBundle& settings, const char* component, const char* objectId);
-String discoveryPayloadSensor(const SettingsBundle& settings, const char* objectId, const char* name, const char* stateTopic, const char* valueTemplate, const char* unit, const char* deviceClass, const char* stateClass, const char* icon = nullptr, int suggestedDisplayPrecision = -1);
-String discoveryPayloadNumber(const SettingsBundle& settings, const char* objectId, const char* name, const char* stateTopic, const char* commandTopic, int minValue, int maxValue, int step, const char* unit, const char* icon = nullptr);
-String discoveryPayloadButton(const SettingsBundle& settings, const char* objectId, const char* name, const char* commandTopic, const char* payloadPress, const char* icon = nullptr);
-String discoveryPayloadText(const SettingsBundle& settings, const char* objectId, const char* name, const char* commandTopic, const char* icon = nullptr);
+String discoveryPayloadSensor(const SettingsBundle& settings, const char* objectId, const char* name, const char* stateTopic, const char* valueTemplate, const char* unit, const char* deviceClass, const char* stateClass, const char* icon = nullptr, int suggestedDisplayPrecision = -1, const String& configurationUrl = String());
+String discoveryPayloadNumber(const SettingsBundle& settings, const char* objectId, const char* name, const char* stateTopic, const char* commandTopic, int minValue, int maxValue, int step, const char* unit, const char* icon = nullptr, const String& configurationUrl = String());
+String discoveryPayloadButton(const SettingsBundle& settings, const char* objectId, const char* name, const char* commandTopic, const char* payloadPress, const char* icon = nullptr, const String& configurationUrl = String());
+String discoveryPayloadText(const SettingsBundle& settings, const char* objectId, const char* name, const char* commandTopic, const char* icon = nullptr, const char* stateTopic = nullptr, const char* valueTemplate = nullptr, const String& configurationUrl = String());
 #ifdef APP_ENABLE_HACS_MQTT
 String discoveryPayloadHacsMediaPlayer(const SettingsBundle& settings);
 #endif

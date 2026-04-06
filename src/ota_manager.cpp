@@ -499,6 +499,7 @@ void OtaManager::appendStatusJson(JsonObject root) const {
 void OtaManager::appendFirmwareInfoJson(JsonObject root, bool refresh, String& error) {
     root["currentVersion"] = normalizeVersion(APP_VERSION);
     root["currentChip"] = currentChipFamily();
+    root["installedAssetName"] = currentReleaseAssetName(settings_);
     root["updateBusy"] = busy_;
     root["updateStatus"] = lastMessage_;
     root["selectedVersion"] = selectedVersion_;
@@ -531,7 +532,11 @@ void OtaManager::appendFirmwareInfoJson(JsonObject root, bool refresh, String& e
     }
 
     root["latestVersion"] = latestVersion_;
+    root["compatibleReleaseCount"] = releaseCache_.size();
     if (!releaseCache_.empty()) {
+        std::vector<String> uniqueVersions;
+        std::vector<String> latestAssets;
+        const String latestTag = latestVersion_.isEmpty() ? releaseCache_.front().tag : latestVersion_;
         JsonArray releases = root["releases"].to<JsonArray>();
         for (const ReleaseInfo& release : releaseCache_) {
             JsonObject item = releases.add<JsonObject>();
@@ -546,7 +551,40 @@ void OtaManager::appendFirmwareInfoJson(JsonObject root, bool refresh, String& e
             item["isInstalled"] = release.isInstalled;
             item["isLatest"] = release.isLatest;
             item["isNew"] = release.isNew;
+
+            bool seenVersion = false;
+            for (const String& version : uniqueVersions) {
+                if (version == release.tag) {
+                    seenVersion = true;
+                    break;
+                }
+            }
+            if (!seenVersion) {
+                uniqueVersions.push_back(release.tag);
+            }
+
+            if (release.tag == latestTag) {
+                latestAssets.push_back(release.assetName);
+            }
         }
+
+        String compatibleVersionsSummary;
+        for (size_t index = 0; index < uniqueVersions.size(); ++index) {
+            if (index > 0) {
+                compatibleVersionsSummary += ", ";
+            }
+            compatibleVersionsSummary += uniqueVersions[index];
+        }
+        root["compatibleVersionsSummary"] = compatibleVersionsSummary;
+
+        String latestAssetsSummary;
+        for (size_t index = 0; index < latestAssets.size(); ++index) {
+            if (index > 0) {
+                latestAssetsSummary += ", ";
+            }
+            latestAssetsSummary += latestAssets[index];
+        }
+        root["latestAssetsSummary"] = latestAssetsSummary;
     }
 
     if (!error.isEmpty()) {

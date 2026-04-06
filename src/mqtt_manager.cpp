@@ -90,9 +90,10 @@ String hacsVolumePayload(uint8_t volumePercent) {
 #endif
 }  // namespace
 
-void MqttManager::begin(const SettingsBundle& settings, AppState& appState, WiFiManager& wifiManager, CommandHandler commandHandler) {
+void MqttManager::begin(const SettingsBundle& settings, AppState& appState, WiFiManager& wifiManager, OtaManager& otaManager, CommandHandler commandHandler) {
     appState_ = &appState;
     wifiManager_ = &wifiManager;
+    otaManager_ = &otaManager;
     commandHandler_ = commandHandler;
     wifiWasConnected_ = wifiManager.isConnected();
 
@@ -218,6 +219,7 @@ void MqttManager::handleWiFiState() {
 
     wifiWasConnected_ = wifiConnected;
     if (!wifiConnected) {
+        discoveryPublishedForSession_ = false;
         lastBrokerActivityAt_ = 0;
         lastConnectAttemptAt_ = millis();
         if (client_.connected()) {
@@ -228,6 +230,7 @@ void MqttManager::handleWiFiState() {
     }
 
     Serial.println("[mqtt] Wi-Fi restored, resetting MQTT session");
+    discoveryPublishedForSession_ = false;
     lastConnectAttemptAt_ = 0;
     lastBrokerActivityAt_ = 0;
     client_.disconnect(true);
@@ -270,6 +273,7 @@ void MqttManager::handleConnected(bool sessionPresent) {
 
 void MqttManager::handleDisconnected(AsyncMqttClientDisconnectReason reason) {
     Serial.printf("[mqtt] disconnected reason=%d\n", static_cast<int>(reason));
+    discoveryPublishedForSession_ = false;
     lastBrokerActivityAt_ = 0;
     if (appState_ != nullptr) {
         appState_->setMqttConnected(false);
@@ -426,6 +430,29 @@ void MqttManager::publishJson(const String& topic, const JsonDocument& doc, bool
     noteBrokerActivity();
 }
 
+String MqttManager::currentConfigUrl() const {
+    if (appState_ != nullptr) {
+        const AppStateSnapshot snapshot = appState_->snapshot();
+        if (!snapshot.network.ip.isEmpty()) {
+            return "http://" + snapshot.network.ip + "/";
+        }
+    }
+
+    if (wifiManager_ != nullptr) {
+        const String localIp = wifiManager_->localIp().toString();
+        if (wifiManager_->isConnected() && localIp != "0.0.0.0") {
+            return "http://" + localIp + "/";
+        }
+
+        const String apIp = wifiManager_->apIp().toString();
+        if (wifiManager_->isApMode() && apIp != "0.0.0.0") {
+            return "http://" + apIp + "/";
+        }
+    }
+
+    return String();
+}
+
 void MqttManager::publishState() {
     if (!client_.connected() || appState_ == nullptr) {
         return;
@@ -458,6 +485,13 @@ void MqttManager::publishState() {
     publishJson(HaBridge::batteryStateTopic(settings_), battery, true);
 
     JsonDocument ota;
+    if (otaManager_ != nullptr) {
+        String error;
+        otaManager_->appendFirmwareInfoJson(ota.to<JsonObject>(), false, error);
+        if (!error.isEmpty()) {
+            ota["error"] = error;
+        }
+    }
     ota["busy"] = snapshot.ota.busy;
     ota["updateAvailable"] = snapshot.ota.updateAvailable;
     ota["latestVersion"] = snapshot.ota.latestVersion;
@@ -466,6 +500,7 @@ void MqttManager::publishState() {
     ota["phase"] = snapshot.ota.phase;
     ota["progressPercent"] = snapshot.ota.progressPercent;
     ota["currentVersion"] = APP_VERSION;
+    ota["configUrl"] = currentConfigUrl();
     publishJson(HaBridge::otaStateTopic(settings_), ota, true);
 
     client_.publish((settings_.mqtt.baseTopic + "/state/volume").c_str(), 1, true, String(snapshot.playback.volumePercent).c_str());
@@ -492,36 +527,46 @@ void MqttManager::publishDiscovery() {
     if (!client_.connected() || !settings_.mqtt.discoveryEnabled) {
         return;
     }
+    const String configurationUrl = currentConfigUrl();
     client_.publish(
         HaBridge::discoveryTopic(settings_, "sensor", "battery_voltage").c_str(), 1, true,
-        HaBridge::discoveryPayloadSensor(settings_, "battery_voltage", "Battery Voltage", HaBridge::batteryStateTopic(settings_).c_str(), "{{ value_json.voltage | float(0) | round(2) }}", "V", "voltage", "measurement", "mdi:battery", 2).c_str());
+        HaBridge::discoveryPayloadSensor(settings_, "battery_voltage", "Battery Voltage", HaBridge::batteryStateTopic(settings_).c_str(), "{{ value_json.voltage | float(0) | round(2) }}", "V", "voltage", "measurement", "mdi:battery", 2, configurationUrl).c_str());
     client_.publish(
         HaBridge::discoveryTopic(settings_, "sensor", "wifi_rssi").c_str(), 1, true,
-        HaBridge::discoveryPayloadSensor(settings_, "wifi_rssi", "Wi-Fi RSSI", HaBridge::networkStateTopic(settings_).c_str(), "{{ value_json.wifiRssi }}", "dBm", "signal_strength", "measurement", "mdi:wifi").c_str());
+        HaBridge::discoveryPayloadSensor(settings_, "wifi_rssi", "Wi-Fi RSSI", HaBridge::networkStateTopic(settings_).c_str(), "{{ value_json.wifiRssi }}", "dBm", "signal_strength", "measurement", "mdi:wifi", -1, configurationUrl).c_str());
     client_.publish(
         HaBridge::discoveryTopic(settings_, "sensor", "playback_state").c_str(), 1, true,
-        HaBridge::discoveryPayloadSensor(settings_, "playback_state", "Playback State", HaBridge::playbackStateTopic(settings_).c_str(), "{{ value_json.state }}", nullptr, nullptr, nullptr, "mdi:speaker-wireless").c_str());
+        HaBridge::discoveryPayloadSensor(settings_, "playback_state", "Playback State", HaBridge::playbackStateTopic(settings_).c_str(), "{{ value_json.state }}", nullptr, nullptr, nullptr, "mdi:speaker-wireless", -1, configurationUrl).c_str());
     client_.publish(
         HaBridge::discoveryTopic(settings_, "sensor", "firmware_ota_status").c_str(), 1, true,
-        HaBridge::discoveryPayloadSensor(settings_, "firmware_ota_status", "Firmware OTA Status", HaBridge::otaStateTopic(settings_).c_str(), "{{ value_json.phase if value_json.busy else (value_json.lastError if value_json.lastError else value_json.lastResult) }}", nullptr, nullptr, nullptr, "mdi:update").c_str());
+        HaBridge::discoveryPayloadSensor(settings_, "firmware_ota_status", "Firmware OTA Status", HaBridge::otaStateTopic(settings_).c_str(), "{{ value_json.phase if value_json.busy else (value_json.lastError if value_json.lastError else (value_json.updateStatus if value_json.updateStatus else value_json.lastResult)) }}", nullptr, nullptr, nullptr, "mdi:update", -1, configurationUrl).c_str());
+    client_.publish(
+        HaBridge::discoveryTopic(settings_, "sensor", "firmware_installed_version").c_str(), 1, true,
+        HaBridge::discoveryPayloadSensor(settings_, "firmware_installed_version", "Installed Firmware", HaBridge::otaStateTopic(settings_).c_str(), "{{ value_json.currentVersion if value_json.currentVersion else 'unknown' }}", nullptr, nullptr, nullptr, "mdi:chip", -1, configurationUrl).c_str());
+    client_.publish(
+        HaBridge::discoveryTopic(settings_, "sensor", "firmware_latest_version").c_str(), 1, true,
+        HaBridge::discoveryPayloadSensor(settings_, "firmware_latest_version", "Latest Compatible Firmware", HaBridge::otaStateTopic(settings_).c_str(), "{{ value_json.latestVersion if value_json.latestVersion else (value_json.currentVersion if value_json.currentVersion else 'unknown') }}", nullptr, nullptr, nullptr, "mdi:source-branch", -1, configurationUrl).c_str());
+    client_.publish(
+        HaBridge::discoveryTopic(settings_, "sensor", "firmware_available_builds").c_str(), 1, true,
+        HaBridge::discoveryPayloadSensor(settings_, "firmware_available_builds", "Compatible Firmware Builds", HaBridge::otaStateTopic(settings_).c_str(), "{{ value_json.latestAssetsSummary if value_json.latestAssetsSummary else (value_json.compatibleVersionsSummary if value_json.compatibleVersionsSummary else 'Run Check Firmware Releases') }}", nullptr, nullptr, nullptr, "mdi:format-list-bulleted", -1, configurationUrl).c_str());
     client_.publish(
         HaBridge::discoveryTopic(settings_, "number", "volume").c_str(), 1, true,
-        HaBridge::discoveryPayloadNumber(settings_, "volume", "Notifier Volume", (settings_.mqtt.baseTopic + "/state/volume").c_str(), HaBridge::commandTopic(settings_, "volume").c_str(), 0, 100, 1, "%", "mdi:volume-high").c_str());
+        HaBridge::discoveryPayloadNumber(settings_, "volume", "Notifier Volume", (settings_.mqtt.baseTopic + "/state/volume").c_str(), HaBridge::commandTopic(settings_, "volume").c_str(), 0, 100, 1, "%", "mdi:volume-high", configurationUrl).c_str());
     client_.publish(
         HaBridge::discoveryTopic(settings_, "button", "stop").c_str(), 1, true,
-        HaBridge::discoveryPayloadButton(settings_, "stop", "Stop Playback", HaBridge::commandTopic(settings_, "stop").c_str(), "stop", "mdi:stop").c_str());
+        HaBridge::discoveryPayloadButton(settings_, "stop", "Stop Playback", HaBridge::commandTopic(settings_, "stop").c_str(), "stop", "mdi:stop", configurationUrl).c_str());
     client_.publish(
         HaBridge::discoveryTopic(settings_, "button", "firmware_check").c_str(), 1, true,
-        HaBridge::discoveryPayloadButton(settings_, "firmware_check", "Check Firmware Releases", HaBridge::commandTopic(settings_, "ota/check").c_str(), "check", "mdi:update").c_str());
+        HaBridge::discoveryPayloadButton(settings_, "firmware_check", "Check Firmware Releases", HaBridge::commandTopic(settings_, "ota/check").c_str(), "check", "mdi:update", configurationUrl).c_str());
     client_.publish(
         HaBridge::discoveryTopic(settings_, "button", "firmware_install_latest").c_str(), 1, true,
-        HaBridge::discoveryPayloadButton(settings_, "firmware_install_latest", "Install Latest Firmware", HaBridge::commandTopic(settings_, "ota/install").c_str(), "latest", "mdi:package-up").c_str());
+        HaBridge::discoveryPayloadButton(settings_, "firmware_install_latest", "Install Latest Firmware", HaBridge::commandTopic(settings_, "ota/install").c_str(), "latest", "mdi:package-up", configurationUrl).c_str());
     client_.publish(
         HaBridge::discoveryTopic(settings_, "text", "play_url").c_str(), 1, true,
-        HaBridge::discoveryPayloadText(settings_, "play_url", "Play URL", HaBridge::commandTopic(settings_, "play").c_str(), "mdi:link").c_str());
+        HaBridge::discoveryPayloadText(settings_, "play_url", "Play URL", HaBridge::commandTopic(settings_, "play").c_str(), "mdi:link", HaBridge::playbackStateTopic(settings_).c_str(), "{{ value_json.url if value_json.url else '' }}", configurationUrl).c_str());
     client_.publish(
         HaBridge::discoveryTopic(settings_, "text", "firmware_install_version").c_str(), 1, true,
-        HaBridge::discoveryPayloadText(settings_, "firmware_install_version", "Install Firmware Version", HaBridge::commandTopic(settings_, "ota/install_version").c_str(), "mdi:tag-arrow-up").c_str());
+        HaBridge::discoveryPayloadText(settings_, "firmware_install_version", "Install Firmware Version", HaBridge::commandTopic(settings_, "ota/install_version").c_str(), "mdi:tag-arrow-up", HaBridge::otaStateTopic(settings_).c_str(), "{{ value_json.latestVersion if value_json.latestVersion else (value_json.currentVersion if value_json.currentVersion else '') }}", configurationUrl).c_str());
 #ifdef APP_ENABLE_HACS_MQTT
     client_.publish(
         HaBridge::hacsMediaPlayerDiscoveryTopic(settings_).c_str(), 1, true,

@@ -5,15 +5,15 @@
 #include "version.h"
 
 namespace {
-void fillDevice(const SettingsBundle& settings, JsonObject device) {
+void fillDevice(const SettingsBundle& settings, JsonObject device, const String& configurationUrl) {
     JsonArray ids = device["identifiers"].to<JsonArray>();
     ids.add(settings.device.deviceName);
     device["name"] = settings.device.friendlyName;
     device["manufacturer"] = "DIY";
     device["model"] = "ESP32 Wi-Fi Audio Notifier";
     device["sw_version"] = APP_VERSION;
-    if (!settings.device.deviceName.isEmpty()) {
-        device["configuration_url"] = "http://" + settings.device.deviceName + ".local/";
+    if (!configurationUrl.isEmpty()) {
+        device["configuration_url"] = configurationUrl;
     }
 }
 
@@ -75,7 +75,7 @@ String discoveryTopic(const SettingsBundle& settings, const char* component, con
     return baseDiscoveryPrefix() + "/" + component + "/" + settings.device.deviceName + "/" + objectId + "/config";
 }
 
-String discoveryPayloadSensor(const SettingsBundle& settings, const char* objectId, const char* name, const char* stateTopic, const char* valueTemplate, const char* unit, const char* deviceClass, const char* stateClass, const char* icon, int suggestedDisplayPrecision) {
+String discoveryPayloadSensor(const SettingsBundle& settings, const char* objectId, const char* name, const char* stateTopic, const char* valueTemplate, const char* unit, const char* deviceClass, const char* stateClass, const char* icon, int suggestedDisplayPrecision, const String& configurationUrl) {
     JsonDocument doc;
     doc["name"] = name;
     doc["uniq_id"] = entityUniqueId(settings, objectId);
@@ -87,13 +87,13 @@ String discoveryPayloadSensor(const SettingsBundle& settings, const char* object
     if (stateClass != nullptr) doc["stat_cla"] = stateClass;
     if (icon != nullptr) doc["ic"] = icon;
     if (suggestedDisplayPrecision >= 0) doc["suggested_display_precision"] = suggestedDisplayPrecision;
-    fillDevice(settings, doc["dev"].to<JsonObject>());
+    fillDevice(settings, doc["dev"].to<JsonObject>(), configurationUrl);
     String out;
     serializeJson(doc, out);
     return out;
 }
 
-String discoveryPayloadNumber(const SettingsBundle& settings, const char* objectId, const char* name, const char* stateTopic, const char* commandTopicValue, int minValue, int maxValue, int step, const char* unit, const char* icon) {
+String discoveryPayloadNumber(const SettingsBundle& settings, const char* objectId, const char* name, const char* stateTopic, const char* commandTopicValue, int minValue, int maxValue, int step, const char* unit, const char* icon, const String& configurationUrl) {
     JsonDocument doc;
     doc["name"] = name;
     doc["uniq_id"] = entityUniqueId(settings, objectId);
@@ -106,13 +106,13 @@ String discoveryPayloadNumber(const SettingsBundle& settings, const char* object
     doc["mode"] = "box";
     if (unit != nullptr) doc["unit_of_meas"] = unit;
     if (icon != nullptr) doc["ic"] = icon;
-    fillDevice(settings, doc["dev"].to<JsonObject>());
+    fillDevice(settings, doc["dev"].to<JsonObject>(), configurationUrl);
     String out;
     serializeJson(doc, out);
     return out;
 }
 
-String discoveryPayloadButton(const SettingsBundle& settings, const char* objectId, const char* name, const char* commandTopicValue, const char* payloadPress, const char* icon) {
+String discoveryPayloadButton(const SettingsBundle& settings, const char* objectId, const char* name, const char* commandTopicValue, const char* payloadPress, const char* icon, const String& configurationUrl) {
     JsonDocument doc;
     doc["name"] = name;
     doc["uniq_id"] = entityUniqueId(settings, objectId);
@@ -120,21 +120,23 @@ String discoveryPayloadButton(const SettingsBundle& settings, const char* object
     doc["pl_prs"] = payloadPress;
     doc["avty_t"] = availabilityTopic(settings);
     if (icon != nullptr) doc["ic"] = icon;
-    fillDevice(settings, doc["dev"].to<JsonObject>());
+    fillDevice(settings, doc["dev"].to<JsonObject>(), configurationUrl);
     String out;
     serializeJson(doc, out);
     return out;
 }
 
-String discoveryPayloadText(const SettingsBundle& settings, const char* objectId, const char* name, const char* commandTopicValue, const char* icon) {
+String discoveryPayloadText(const SettingsBundle& settings, const char* objectId, const char* name, const char* commandTopicValue, const char* icon, const char* stateTopic, const char* valueTemplate, const String& configurationUrl) {
     JsonDocument doc;
     doc["name"] = name;
     doc["uniq_id"] = entityUniqueId(settings, objectId);
     doc["cmd_t"] = commandTopicValue;
     doc["mode"] = "text";
     doc["avty_t"] = availabilityTopic(settings);
+    if (stateTopic != nullptr) doc["stat_t"] = stateTopic;
+    if (valueTemplate != nullptr) doc["val_tpl"] = valueTemplate;
     if (icon != nullptr) doc["ic"] = icon;
-    fillDevice(settings, doc["dev"].to<JsonObject>());
+    fillDevice(settings, doc["dev"].to<JsonObject>(), configurationUrl);
     String out;
     serializeJson(doc, out);
     return out;
@@ -171,7 +173,7 @@ String discoveryPayloadHacsMediaPlayer(const SettingsBundle& settings) {
     doc["command_volume_topic"] = hacsMediaPlayerCommandTopic(settings, "volume");
     doc["command_playmedia_topic"] = hacsMediaPlayerCommandTopic(settings, "playmedia");
 
-    fillDevice(settings, doc["device"].to<JsonObject>());
+    fillDevice(settings, doc["device"].to<JsonObject>(), String());
 
     String out;
     serializeJson(doc, out);
