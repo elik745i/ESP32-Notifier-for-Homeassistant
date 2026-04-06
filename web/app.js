@@ -110,10 +110,67 @@ function defaultButtonActionForField(fieldName) {
   return fieldName === "device.button1Action" ? "previous" : "next";
 }
 
+function decodeHtmlEntities(value) {
+  return String(value || "")
+    .replaceAll("&amp;", "&")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&#39;", "'")
+    .replaceAll("&apos;", "'")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&nbsp;", " ");
+}
+
+function safeDecodePercentEncoding(value, plusAsSpace = false) {
+  const input = String(value || "");
+  try {
+    return decodeURIComponent(plusAsSpace ? input.replaceAll("+", " ") : input);
+  } catch {
+    return input;
+  }
+}
+
+function derivePlaybackTitleFromUrl(url) {
+  const rawUrl = String(url || "").trim();
+  if (!rawUrl) {
+    return "";
+  }
+
+  const trimmed = rawUrl.split("#", 1)[0].split("?", 1)[0];
+  const lastSlash = trimmed.lastIndexOf("/");
+  const filename = lastSlash >= 0 ? trimmed.slice(lastSlash + 1) : trimmed;
+  return decodeHtmlEntities(safeDecodePercentEncoding(filename).replaceAll("_", " ")).replace(/\s+/g, " ").trim();
+}
+
+function normalizePlaybackTitle(title, fallbackUrl = "") {
+  let nextTitle = String(title || "").trim();
+  if (!nextTitle) {
+    return derivePlaybackTitleFromUrl(fallbackUrl);
+  }
+
+  const streamTitleMatch = nextTitle.match(/StreamTitle=(['"]?)(.*)\1;?/i);
+  if (streamTitleMatch?.[2]) {
+    nextTitle = streamTitleMatch[2];
+  }
+
+  nextTitle = decodeHtmlEntities(safeDecodePercentEncoding(nextTitle, true)).replace(/^['"]+|['"]+$/g, "").replace(/\s+/g, " ").trim();
+  if (!nextTitle) {
+    return derivePlaybackTitleFromUrl(fallbackUrl);
+  }
+
+  if (/^https?:\/\//i.test(nextTitle) || nextTitle.includes("authSig=")) {
+    return derivePlaybackTitleFromUrl(nextTitle || fallbackUrl);
+  }
+
+  return nextTitle;
+}
+
 function availableButtonActionOptions() {
   const audioEnabled = Boolean(state.status?.firmware?.audioEnabled ?? true);
   const options = [
     { value: "none", label: "No Action" },
+    { value: "ha_previous", label: "Home Assistant Previous Event" },
+    { value: "ha_next", label: "Home Assistant Next Event" },
     { value: "volume_down", label: "Volume Down (-5%)" },
     { value: "volume_up", label: "Volume Up (+5%)" },
   ];
@@ -746,7 +803,7 @@ function oledCenterText(status) {
     return status.system.lastError;
   }
   if (status.playback?.state === "playing") {
-    return status.playback.title || status.playback.url || "Playing";
+    return normalizePlaybackTitle(status.playback.title, status.playback.url) || "Playing";
   }
   if (status.network?.apMode && !status.network?.wifiConnected) {
     return "AP setup mode";
@@ -1025,7 +1082,7 @@ function renderRecentPlayback() {
   elements.recentPlaybackList.innerHTML = state.recentPlayback.map((item, index) => `
     <div class="firmware-item">
       <div class="firmware-meta">
-        <div class="firmware-title">${escapeHtml(item.label || item.url)}</div>
+        <div class="firmware-title">${escapeHtml(normalizePlaybackTitle(item.label, item.url))}</div>
         <div class="firmware-subtitle">${escapeHtml(item.type)} | ${escapeHtml(item.url)}</div>
       </div>
       <button type="button" class="secondary recent-play-button" data-index="${index}">Use</button>
@@ -1170,8 +1227,11 @@ function renderStatus(status) {
   elements.freeHeap.textContent = `${status.system.freeHeap} B`;
   elements.settingsSource.textContent = status.settings.usingSaved ? "Saved settings" : "Hardwired defaults";
   elements.playbackState.textContent = status.playback.state || "idle";
-  elements.currentTitle.textContent = status.playback.title || "Idle";
+  const currentTitle = normalizePlaybackTitle(status.playback.title, status.playback.url) || "Idle";
+  elements.currentTitle.textContent = currentTitle;
+  elements.currentTitle.title = currentTitle;
   elements.currentUrl.value = status.playback.url || "";
+  elements.currentUrl.title = status.playback.url || "";
   if (document.activeElement !== elements.volumeSlider) {
     elements.volumeSlider.value = savedVolumePercent;
   }
@@ -1668,7 +1728,7 @@ async function submitPlay(event) {
   }
   const payload = {
     url: elements.playUrl.value,
-    label: elements.playLabel.value,
+    label: normalizePlaybackTitle(elements.playLabel.value, elements.playUrl.value),
     type: elements.playType.value,
   };
   await request("/api/play", { method: "POST", body: JSON.stringify(payload) });

@@ -14,6 +14,12 @@ PlatformIO firmware for an ESP32-based Wi-Fi audio notifier / speaker with:
 
 This project is not ESPHome. It is a custom modular PlatformIO firmware baseline intended to be realistic, buildable, and extendable.
 
+## Hardware Gallery
+
+| Notifier V3 | Notifier V1 |
+|---|---|
+| ![Notifier V3 ready device](Docs/V3.jpeg) | ![Notifier V1 ready device](Docs/v1.jpeg) |
+
 ## Project Overview
 
 This notifier project is based on the third hardware iteration of a Home Assistant speaker / notifier build.

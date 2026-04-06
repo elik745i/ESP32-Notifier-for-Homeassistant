@@ -3,24 +3,22 @@
 #include <Audio.h>
 
 #include "default_config.h"
+#include "playback_text.h"
 
 namespace {
 AudioPlayer::Impl* g_impl = nullptr;
 
-String fallbackTitle(const String& url) {
-    const int lastSlash = url.lastIndexOf('/');
-    if (lastSlash >= 0 && lastSlash < url.length() - 1) {
-        return url.substring(lastSlash + 1);
-    }
-    return url;
-}
+constexpr unsigned long kSwitchFadeOutMs = 70UL;
+constexpr unsigned long kStartFadeInMs = 90UL;
+constexpr unsigned long kSwitchQuietTimeMs = 18UL;
 }  // namespace
 
 class AudioPlayer::Impl {
   public:
     Audio audio;
     AppState* appState = nullptr;
-        uint8_t volume = DefaultConfig::DEFAULT_VOLUME_PERCENT;
+    uint8_t volume = DefaultConfig::DEFAULT_VOLUME_PERCENT;
+    uint8_t hardwareAudioVolume = 0;
     String state = "idle";
     String type = "idle";
     String title = "Idle";
@@ -40,9 +38,35 @@ class AudioPlayer::Impl {
     void markPlaying() {
         state = "playing";
         if (title.isEmpty()) {
-            title = fallbackTitle(url);
+            title = PlaybackText::fallbackTitleFromUrl(url);
         }
         publish();
+    }
+
+    void setHardwareAudioVolume(uint8_t audioVolume) {
+        hardwareAudioVolume = constrain(audioVolume, static_cast<uint8_t>(0), static_cast<uint8_t>(21));
+        audio.setVolume(hardwareAudioVolume);
+    }
+
+    void applyHardwareVolumePercent(uint8_t volumePercent) {
+        setHardwareAudioVolume(map(volumePercent, 0, 100, 0, 21));
+    }
+
+    void fadeToPercent(uint8_t targetVolumePercent, unsigned long durationMs) {
+        const int targetAudioVolume = map(targetVolumePercent, 0, 100, 0, 21);
+        if (hardwareAudioVolume == targetAudioVolume) {
+            return;
+        }
+
+        const int direction = hardwareAudioVolume < targetAudioVolume ? 1 : -1;
+        const unsigned long steps = static_cast<unsigned long>(abs(targetAudioVolume - hardwareAudioVolume));
+        const unsigned long stepDelayMs = steps == 0 ? 0 : max<unsigned long>(4UL, durationMs / steps);
+
+        while (hardwareAudioVolume != targetAudioVolume) {
+            setHardwareAudioVolume(static_cast<uint8_t>(hardwareAudioVolume + direction));
+            delay(stepDelayMs);
+            yield();
+        }
     }
 };
 
@@ -52,7 +76,7 @@ void audio_info(const char* info) {
 
 void audio_showstation(const char* info) {
     if (g_impl != nullptr && info != nullptr) {
-        const String nextTitle = info;
+        const String nextTitle = PlaybackText::normalizeTitle(String(info), g_impl->url);
         if (!nextTitle.isEmpty() && g_impl->title != nextTitle) {
             g_impl->title = nextTitle;
             g_impl->publish();
@@ -62,7 +86,7 @@ void audio_showstation(const char* info) {
 
 void audio_showstreamtitle(const char* info) {
     if (g_impl != nullptr && info != nullptr) {
-        const String nextTitle = info;
+        const String nextTitle = PlaybackText::normalizeTitle(String(info), g_impl->url);
         if (!nextTitle.isEmpty() && g_impl->title != nextTitle) {
             g_impl->title = nextTitle;
             g_impl->publish();
@@ -92,8 +116,9 @@ void AudioPlayer::begin(uint8_t bclkPin, uint8_t wsPin, uint8_t doutPin, uint8_t
     impl_->audio.setBufsize(DefaultConfig::AUDIO_BUFFER_SIZE_RAM, DefaultConfig::AUDIO_BUFFER_SIZE_PSRAM);
     impl_->audio.setPinout(bclkPin, wsPin, doutPin);
     impl_->audio.forceMono(false);
-    impl_->audio.setConnectionTimeout(5000, 5000);
-    setVolumePercent(initialVolumePercent);
+    impl_->audio.setConnectionTimeout(8000, 8000);
+    impl_->volume = constrain(initialVolumePercent, static_cast<uint8_t>(0), static_cast<uint8_t>(100));
+    impl_->applyHardwareVolumePercent(impl_->volume);
     impl_->publish();
 }
 
@@ -115,23 +140,41 @@ bool AudioPlayer::play(const String& url, const String& title, const String& med
     if (impl_ == nullptr || url.isEmpty()) {
         return false;
     }
+
+    const String normalizedUrl = PlaybackText::normalizeUrl(url);
+    const String normalizedTitle = PlaybackText::normalizeTitle(title, normalizedUrl);
+
+    if (impl_->audio.isRunning() || impl_->state == "playing" || impl_->state == "buffering") {
+        impl_->fadeToPercent(0, kSwitchFadeOutMs);
+        impl_->audio.stopSong();
+        delay(kSwitchQuietTimeMs);
+    }
+
     impl_->stopRequested = false;
     impl_->retryPending = false;
     impl_->retryCount = 0;
-    impl_->url = url;
-    impl_->title = title;
+    impl_->url = normalizedUrl;
+    impl_->title = normalizedTitle;
     impl_->type = mediaType;
     impl_->source = source;
     impl_->state = "buffering";
     impl_->publish();
-    impl_->audio.stopSong();
-    const bool connected = impl_->audio.connecttohost(url.c_str());
+    impl_->applyHardwareVolumePercent(0);
+
+    bool connected = impl_->audio.connecttohost(normalizedUrl.c_str());
     if (!connected) {
+        delay(120);
+        connected = impl_->audio.connecttohost(normalizedUrl.c_str());
+    }
+    if (!connected) {
+        impl_->applyHardwareVolumePercent(impl_->volume);
         impl_->state = "error";
         impl_->publish();
         return false;
     }
+
     impl_->markPlaying();
+    impl_->fadeToPercent(impl_->volume, kStartFadeInMs);
     return true;
 }
 
@@ -139,8 +182,13 @@ void AudioPlayer::stop() {
     if (impl_ == nullptr) {
         return;
     }
+
     impl_->stopRequested = true;
     impl_->retryPending = false;
+    if (impl_->audio.isRunning() || impl_->state == "playing" || impl_->state == "buffering") {
+        impl_->fadeToPercent(0, kSwitchFadeOutMs);
+        delay(kSwitchQuietTimeMs);
+    }
     impl_->audio.stopSong();
     impl_->state = "idle";
     impl_->type = "idle";
@@ -159,8 +207,7 @@ void AudioPlayer::setVolumePercent(uint8_t volumePercent) {
         return;
     }
     impl_->volume = nextVolume;
-    const uint8_t audioVolume = map(impl_->volume, 0, 100, 0, 21);
-    impl_->audio.setVolume(audioVolume);
+    impl_->applyHardwareVolumePercent(impl_->volume);
     impl_->publish();
 }
 

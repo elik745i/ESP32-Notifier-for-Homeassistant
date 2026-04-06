@@ -72,6 +72,7 @@ void loop() {
 #include "display_manager.h"
 #include "mqtt_manager.h"
 #include "ota_manager.h"
+#include "playback_text.h"
 #include "settings_manager.h"
 #include "sound_effects.h"
 #include "version.h"
@@ -271,7 +272,8 @@ String normalizedButtonAction(String action, const char* fallback) {
     action.replace(' ', '_');
 
     if (action == "none" || action == "previous" || action == "next" || action == "play_pause" ||
-        action == "replay_current" || action == "stop" || action == "volume_up" || action == "volume_down") {
+        action == "replay_current" || action == "stop" || action == "volume_up" || action == "volume_down" ||
+        action == "ha_previous" || action == "ha_next") {
         return action;
     }
 
@@ -303,14 +305,17 @@ void initializeButtons() {
 }
 
 void rememberPlaybackSelection(const String& url, const String& label, const String& type, const String& source) {
-    if (url.isEmpty()) {
+    const String normalizedUrl = PlaybackText::normalizeUrl(url);
+    const String normalizedLabel = PlaybackText::normalizeTitle(label, normalizedUrl);
+
+    if (normalizedUrl.isEmpty()) {
         return;
     }
 
     if (playbackHistoryIndex >= 0 && playbackHistoryIndex < static_cast<int>(playbackHistoryCount)) {
         PlaybackHistoryEntry& current = playbackHistory[playbackHistoryIndex];
-        if (current.url == url && current.type == type) {
-            current.label = label;
+        if (current.url == normalizedUrl && current.type == type) {
+            current.label = normalizedLabel;
             current.source = source;
             return;
         }
@@ -322,8 +327,8 @@ void rememberPlaybackSelection(const String& url, const String& label, const Str
 
     if (playbackHistoryCount > 0) {
         PlaybackHistoryEntry& last = playbackHistory[playbackHistoryCount - 1];
-        if (last.url == url && last.type == type) {
-            last.label = label;
+        if (last.url == normalizedUrl && last.type == type) {
+            last.label = normalizedLabel;
             last.source = source;
             playbackHistoryIndex = static_cast<int>(playbackHistoryCount - 1);
             return;
@@ -337,7 +342,7 @@ void rememberPlaybackSelection(const String& url, const String& label, const Str
         playbackHistoryCount -= 1;
     }
 
-    playbackHistory[playbackHistoryCount] = {url, label, type, source};
+    playbackHistory[playbackHistoryCount] = {normalizedUrl, normalizedLabel, type, source};
     playbackHistoryCount += 1;
     playbackHistoryIndex = static_cast<int>(playbackHistoryCount - 1);
 }
@@ -418,7 +423,7 @@ void changeVolumeBy(int delta) {
     applyVolumePercent(static_cast<uint8_t>(nextVolume));
 }
 
-bool executeButtonAction(const String& action) {
+bool executeButtonAction(const PhysicalButtonState& button, const String& action) {
     if (action == "none") {
         return false;
     }
@@ -462,6 +467,12 @@ bool executeButtonAction(const String& action) {
         changeVolumeBy(-static_cast<int>(DefaultConfig::BUTTON_VOLUME_STEP_PERCENT));
         return true;
     }
+    if (action == "ha_previous" || action == "ha_next") {
+        if (mqttManager == nullptr) {
+            return false;
+        }
+        return mqttManager->publishButtonActionEvent(button.label, button.pin, action == "ha_previous" ? "previous" : "next");
+    }
 
     return false;
 }
@@ -485,7 +496,7 @@ void pollPhysicalButton(PhysicalButtonState& button) {
     }
 
     const String action = buttonActionFor(button);
-    const bool handled = executeButtonAction(action);
+    const bool handled = executeButtonAction(button, action);
     Serial.printf("[input] %s on GPIO%u action=%s handled=%s\n",
                   button.label,
                   static_cast<unsigned>(button.pin),
@@ -637,7 +648,8 @@ bool saveSettingsFromJson(JsonVariantConst root, String& error) {
 }
 
 bool playRequest(const String& url, const String& label, const String& type, const String& source, String& error, bool addToHistory) {
-    if (url.isEmpty()) {
+    const String normalizedUrl = PlaybackText::normalizeUrl(url);
+    if (normalizedUrl.isEmpty()) {
         error = "URL is required";
         return false;
     }
@@ -645,8 +657,8 @@ bool playRequest(const String& url, const String& label, const String& type, con
     error = "Audio disabled in diagnostic build";
     return false;
 #endif
-    deferredActions->playUrl = url;
-    deferredActions->playLabel = label;
+    deferredActions->playUrl = normalizedUrl;
+    deferredActions->playLabel = PlaybackText::normalizeTitle(label, normalizedUrl);
     deferredActions->playType = type;
     deferredActions->playAddToHistory = addToHistory;
     if (!source.isEmpty()) {

@@ -115,6 +115,7 @@ void WebServerManager::registerApiRoutes() {
     #else
         firmware["audioEnabled"] = true;
     #endif
+        firmware["buttonEventTopic"] = settingsGetter_().mqtt.baseTopic + "/event/button_action";
         otaManager_->appendStatusJson(doc["otaManager"].to<JsonObject>());
         sendJson(request, doc);
     });

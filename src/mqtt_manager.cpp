@@ -443,6 +443,20 @@ void MqttManager::publishDiscovery() {
 #endif
 }
 
+bool MqttManager::publishButtonActionEvent(const String& buttonLabel, uint8_t pin, const String& action) {
+    if (!client_.connected()) {
+        return false;
+    }
+
+    JsonDocument payload;
+    payload["action"] = action;
+    payload["button"] = buttonLabel;
+    payload["pin"] = pin;
+    payload["source"] = "touch";
+    publishJson(settings_.mqtt.baseTopic + "/event/button_action", payload, false);
+    return true;
+}
+
 bool MqttManager::isConnected() const {
     return client_.connected();
 }

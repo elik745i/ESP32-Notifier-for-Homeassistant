@@ -367,7 +367,7 @@
               </label>
               <div></div>
             </div>
-            <p class="note">GPIO5 and GPIO6 are treated as active-high touch/button inputs. Button 1 defaults to Previous Track and Button 2 defaults to Next Track. When rotated 90 or 270 degrees the renderer automatically uses the effective portrait resolution so text and OTA progress fit the rotated screen.</p>
+            <p class="note">GPIO5 and GPIO6 are treated as active-high touch/button inputs. Button 1 defaults to Previous Track and Button 2 defaults to Next Track. The Home Assistant Previous and Next actions publish MQTT events on the button-action topic so you can bind those touches to Home Assistant automations. When rotated 90 or 270 degrees the renderer automatically uses the effective portrait resolution so text and OTA progress fit the rotated screen.</p>
           </form>
         </div>
 

@@ -58,7 +58,8 @@ String normalizeButtonAction(String value, const char* fallback) {
     value.replace(' ', '_');
 
     if (value == "none" || value == "previous" || value == "next" || value == "play_pause" ||
-        value == "replay_current" || value == "stop" || value == "volume_up" || value == "volume_down") {
+        value == "replay_current" || value == "stop" || value == "volume_up" || value == "volume_down" ||
+        value == "ha_previous" || value == "ha_next") {
         return value;
     }
 
