@@ -20,6 +20,50 @@ T clampValue(T value, T low, T high) {
 String fallbackIfEmpty(const String& value, const String& fallback) {
     return value.isEmpty() ? fallback : value;
 }
+
+String hardwareIdSuffix(bool uppercase = false) {
+    const uint64_t chipId = ESP.getEfuseMac();
+    const uint32_t shortId = static_cast<uint32_t>(chipId & 0xFFFFFF);
+
+    char buffer[7];
+    snprintf(buffer, sizeof(buffer), uppercase ? "%06lX" : "%06lx", static_cast<unsigned long>(shortId));
+    return String(buffer);
+}
+
+String defaultDeviceName() {
+    return String(DefaultConfig::DEVICE_NAME) + "-" + hardwareIdSuffix(false);
+}
+
+String defaultFriendlyName() {
+    return String(DefaultConfig::FRIENDLY_NAME) + " " + hardwareIdSuffix(true);
+}
+
+bool isLegacyDefaultDeviceName(const String& value) {
+    String normalized = value;
+    normalized.trim();
+    normalized.toLowerCase();
+    return normalized == String(DefaultConfig::DEVICE_NAME);
+}
+
+bool isLegacyDefaultFriendlyName(const String& value) {
+    String normalized = value;
+    normalized.trim();
+    return normalized == String(DefaultConfig::FRIENDLY_NAME) || isLegacyDefaultDeviceName(normalized);
+}
+
+String normalizeButtonAction(String value, const char* fallback) {
+    value.trim();
+    value.toLowerCase();
+    value.replace('-', '_');
+    value.replace(' ', '_');
+
+    if (value == "none" || value == "previous" || value == "next" || value == "play_pause" ||
+        value == "replay_current" || value == "stop" || value == "volume_up" || value == "volume_down") {
+        return value;
+    }
+
+    return String(fallback);
+}
 }  // namespace
 
 bool SettingsManager::begin() {
@@ -28,6 +72,9 @@ bool SettingsManager::begin() {
 
 SettingsBundle SettingsManager::defaults() const {
     SettingsBundle settings;
+    const String uniqueDeviceName = defaultDeviceName();
+    const String uniqueFriendlyName = defaultFriendlyName();
+
     settings.wifi.ssid = DefaultConfig::WIFI_SSID;
     settings.wifi.password = DefaultConfig::WIFI_PASSWORD;
     settings.wifi.apSsid = "";
@@ -67,10 +114,12 @@ SettingsBundle SettingsManager::defaults() const {
     settings.oled.resetPin = DefaultConfig::OLED_RESET_PIN;
     settings.oled.dimTimeoutSeconds = DefaultConfig::OLED_DIM_TIMEOUT_SECONDS;
 
-    settings.device.deviceName = DefaultConfig::DEVICE_NAME;
-    settings.device.friendlyName = DefaultConfig::FRIENDLY_NAME;
+    settings.device.deviceName = uniqueDeviceName;
+    settings.device.friendlyName = uniqueFriendlyName;
     settings.device.savedVolumePercent = DefaultConfig::DEFAULT_VOLUME_PERCENT;
     settings.device.audioMuted = DefaultConfig::DEFAULT_AUDIO_MUTED;
+    settings.device.button1Action = DefaultConfig::BUTTON1_DEFAULT_ACTION;
+    settings.device.button2Action = DefaultConfig::BUTTON2_DEFAULT_ACTION;
     settings.device.lowBatterySleepEnabled = DefaultConfig::LOW_BATTERY_SLEEP_ENABLED;
     settings.device.lowBatterySleepThresholdPercent = DefaultConfig::LOW_BATTERY_SLEEP_THRESHOLD_PERCENT;
     settings.device.lowBatteryWakeIntervalMinutes = DefaultConfig::LOW_BATTERY_WAKE_INTERVAL_MINUTES;
@@ -95,11 +144,11 @@ SettingsBundle SettingsManager::sanitize(const SettingsBundle& input) const {
     settings.ota.manifestUrl.trim();
     settings.webAuth.username.trim();
 
-    if (settings.device.deviceName.isEmpty()) {
-        settings.device.deviceName = DefaultConfig::DEVICE_NAME;
+    if (settings.device.deviceName.isEmpty() || isLegacyDefaultDeviceName(settings.device.deviceName)) {
+        settings.device.deviceName = defaultDeviceName();
     }
-    if (settings.device.friendlyName.isEmpty()) {
-        settings.device.friendlyName = settings.device.deviceName;
+    if (settings.device.friendlyName.isEmpty() || isLegacyDefaultFriendlyName(settings.device.friendlyName)) {
+        settings.device.friendlyName = defaultFriendlyName();
     }
     if (settings.mqtt.baseTopic.isEmpty()) {
         settings.mqtt.baseTopic = DefaultConfig::MQTT_BASE_TOPIC;
@@ -116,6 +165,8 @@ SettingsBundle SettingsManager::sanitize(const SettingsBundle& input) const {
     if (settings.device.savedVolumePercent > 100) {
         settings.device.savedVolumePercent = 100;
     }
+    settings.device.button1Action = normalizeButtonAction(settings.device.button1Action, DefaultConfig::BUTTON1_DEFAULT_ACTION);
+    settings.device.button2Action = normalizeButtonAction(settings.device.button2Action, DefaultConfig::BUTTON2_DEFAULT_ACTION);
     settings.device.lowBatterySleepThresholdPercent = clampValue<uint8_t>(settings.device.lowBatterySleepThresholdPercent, static_cast<uint8_t>(1), static_cast<uint8_t>(100));
     settings.device.lowBatteryWakeIntervalMinutes = clampValue<uint16_t>(settings.device.lowBatteryWakeIntervalMinutes, static_cast<uint16_t>(0), static_cast<uint16_t>(1440));
     settings.battery.calibrationMultiplier = clampValue<float>(settings.battery.calibrationMultiplier, 0.1f, 10.0f);
@@ -195,6 +246,8 @@ SettingsBundle SettingsManager::load() {
     settings.device.friendlyName = readString("dev_friendly", settings.device.friendlyName);
     settings.device.savedVolumePercent = readUInt("dev_vol", settings.device.savedVolumePercent);
     settings.device.audioMuted = readBool("dev_muted", settings.device.audioMuted);
+    settings.device.button1Action = readString("dev_btn1", settings.device.button1Action);
+    settings.device.button2Action = readString("dev_btn2", settings.device.button2Action);
     settings.device.lowBatterySleepEnabled = readBool("dev_lbs_en", settings.device.lowBatterySleepEnabled);
     settings.device.lowBatterySleepThresholdPercent = readUInt("dev_lbs_pct", settings.device.lowBatterySleepThresholdPercent);
     settings.device.lowBatteryWakeIntervalMinutes = readUInt("dev_lbs_wk", settings.device.lowBatteryWakeIntervalMinutes);
@@ -259,6 +312,8 @@ bool SettingsManager::save(const SettingsBundle& settings) {
     changed |= writeStringIfChanged("dev_friendly", sanitized.device.friendlyName);
     changed |= writeUIntIfChanged("dev_vol", sanitized.device.savedVolumePercent);
     changed |= writeBoolIfChanged("dev_muted", sanitized.device.audioMuted);
+    changed |= writeStringIfChanged("dev_btn1", sanitized.device.button1Action);
+    changed |= writeStringIfChanged("dev_btn2", sanitized.device.button2Action);
     changed |= writeBoolIfChanged("dev_lbs_en", sanitized.device.lowBatterySleepEnabled);
     changed |= writeUIntIfChanged("dev_lbs_pct", sanitized.device.lowBatterySleepThresholdPercent);
     changed |= writeUIntIfChanged("dev_lbs_wk", sanitized.device.lowBatteryWakeIntervalMinutes);
@@ -329,6 +384,8 @@ void SettingsManager::toJson(const SettingsBundle& settings, JsonObject root) co
     device["friendlyName"] = settings.device.friendlyName;
     device["savedVolumePercent"] = settings.device.savedVolumePercent;
     device["audioMuted"] = settings.device.audioMuted;
+    device["button1Action"] = settings.device.button1Action;
+    device["button2Action"] = settings.device.button2Action;
     device["lowBatterySleepEnabled"] = settings.device.lowBatterySleepEnabled;
     device["lowBatterySleepThresholdPercent"] = settings.device.lowBatterySleepThresholdPercent;
     device["lowBatteryWakeIntervalMinutes"] = settings.device.lowBatteryWakeIntervalMinutes;
@@ -418,6 +475,8 @@ bool SettingsManager::updateFromJson(SettingsBundle& settings, JsonVariantConst 
     if (!device.isNull()) {
         copyString(device, "deviceName", settings.device.deviceName);
         copyString(device, "friendlyName", settings.device.friendlyName);
+        copyString(device, "button1Action", settings.device.button1Action);
+        copyString(device, "button2Action", settings.device.button2Action);
         if (device["savedVolumePercent"].is<uint8_t>()) settings.device.savedVolumePercent = device["savedVolumePercent"].as<uint8_t>();
         if (device["audioMuted"].is<bool>()) settings.device.audioMuted = device["audioMuted"].as<bool>();
         if (device["lowBatterySleepEnabled"].is<bool>()) settings.device.lowBatterySleepEnabled = device["lowBatterySleepEnabled"].as<bool>();

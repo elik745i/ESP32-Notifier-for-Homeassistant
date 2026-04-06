@@ -154,6 +154,7 @@ struct DeferredActions {
     bool settingsApplyPending = false;
     SettingsBundle pendingSettings;
     bool playPending = false;
+    bool playAddToHistory = true;
     bool stopPending = false;
     bool volumePending = false;
     bool volumeSavePending = false;
@@ -166,6 +167,21 @@ struct DeferredActions {
 };
 
 DeferredActions* deferredActions = nullptr;
+
+struct PhysicalButtonState {
+    uint8_t pin = 0;
+    const char* label = "";
+    bool lastSampledPressed = false;
+    bool stablePressed = false;
+    unsigned long lastTransitionAt = 0;
+};
+
+struct PlaybackHistoryEntry {
+    String url;
+    String label;
+    String type;
+    String source;
+};
 
 bool rebootRequested = false;
 bool factoryResetRequested = false;
@@ -183,6 +199,16 @@ constexpr float kBatteryPercentEmptyVoltage = 3.2f;
 constexpr float kBatteryPercentFullVoltage = 4.2f;
 constexpr unsigned long kLowBatteryWakeWindowMs = 30000UL;
 constexpr unsigned long kVolumePersistDelayMs = 750UL;
+constexpr unsigned long kButtonDebounceMs = 30UL;
+constexpr size_t kPlaybackHistoryLimit = 12;
+
+bool playRequest(const String& url, const String& label, const String& type, const String& source, String& error, bool addToHistory);
+
+PhysicalButtonState button1 { DefaultConfig::BUTTON1_PIN, "Button 1" };
+PhysicalButtonState button2 { DefaultConfig::BUTTON2_PIN, "Button 2" };
+PlaybackHistoryEntry playbackHistory[kPlaybackHistoryLimit];
+size_t playbackHistoryCount = 0;
+int playbackHistoryIndex = -1;
 
 bool isBatterySamplingAllowed() {
     if (audioPlayer == nullptr) {
@@ -236,6 +262,240 @@ uint8_t estimateBatteryPercent(float voltage) {
     const float normalized = (voltage - kBatteryPercentEmptyVoltage) / (kBatteryPercentFullVoltage - kBatteryPercentEmptyVoltage);
     const float clamped = normalized < 0.0f ? 0.0f : (normalized > 1.0f ? 1.0f : normalized);
     return static_cast<uint8_t>((clamped * 100.0f) + 0.5f);
+}
+
+String normalizedButtonAction(String action, const char* fallback) {
+    action.trim();
+    action.toLowerCase();
+    action.replace('-', '_');
+    action.replace(' ', '_');
+
+    if (action == "none" || action == "previous" || action == "next" || action == "play_pause" ||
+        action == "replay_current" || action == "stop" || action == "volume_up" || action == "volume_down") {
+        return action;
+    }
+
+    return String(fallback);
+}
+
+String buttonActionFor(const PhysicalButtonState& button) {
+    if (settings == nullptr) {
+        return button.pin == DefaultConfig::BUTTON1_PIN ? String(DefaultConfig::BUTTON1_DEFAULT_ACTION) : String(DefaultConfig::BUTTON2_DEFAULT_ACTION);
+    }
+
+    return button.pin == DefaultConfig::BUTTON1_PIN
+        ? normalizedButtonAction(settings->device.button1Action, DefaultConfig::BUTTON1_DEFAULT_ACTION)
+        : normalizedButtonAction(settings->device.button2Action, DefaultConfig::BUTTON2_DEFAULT_ACTION);
+}
+
+void initializeButtons() {
+    pinMode(button1.pin, INPUT);
+    pinMode(button2.pin, INPUT);
+
+    const unsigned long now = millis();
+    button1.lastSampledPressed = digitalRead(button1.pin) == HIGH;
+    button1.stablePressed = button1.lastSampledPressed;
+    button1.lastTransitionAt = now;
+
+    button2.lastSampledPressed = digitalRead(button2.pin) == HIGH;
+    button2.stablePressed = button2.lastSampledPressed;
+    button2.lastTransitionAt = now;
+}
+
+void rememberPlaybackSelection(const String& url, const String& label, const String& type, const String& source) {
+    if (url.isEmpty()) {
+        return;
+    }
+
+    if (playbackHistoryIndex >= 0 && playbackHistoryIndex < static_cast<int>(playbackHistoryCount)) {
+        PlaybackHistoryEntry& current = playbackHistory[playbackHistoryIndex];
+        if (current.url == url && current.type == type) {
+            current.label = label;
+            current.source = source;
+            return;
+        }
+    }
+
+    if (playbackHistoryIndex >= 0 && playbackHistoryIndex < static_cast<int>(playbackHistoryCount - 1)) {
+        playbackHistoryCount = static_cast<size_t>(playbackHistoryIndex + 1);
+    }
+
+    if (playbackHistoryCount > 0) {
+        PlaybackHistoryEntry& last = playbackHistory[playbackHistoryCount - 1];
+        if (last.url == url && last.type == type) {
+            last.label = label;
+            last.source = source;
+            playbackHistoryIndex = static_cast<int>(playbackHistoryCount - 1);
+            return;
+        }
+    }
+
+    if (playbackHistoryCount == kPlaybackHistoryLimit) {
+        for (size_t index = 1; index < playbackHistoryCount; ++index) {
+            playbackHistory[index - 1] = playbackHistory[index];
+        }
+        playbackHistoryCount -= 1;
+    }
+
+    playbackHistory[playbackHistoryCount] = {url, label, type, source};
+    playbackHistoryCount += 1;
+    playbackHistoryIndex = static_cast<int>(playbackHistoryCount - 1);
+}
+
+bool replayPlaybackEntry(const PlaybackHistoryEntry& entry, bool addToHistory) {
+    if (entry.url.isEmpty()) {
+        return false;
+    }
+
+    String error;
+    return playRequest(entry.url, entry.label, entry.type, entry.source, error, addToHistory);
+}
+
+bool replayCurrentPlaybackSelection(bool addToHistory) {
+    if (playbackHistoryIndex >= 0 && playbackHistoryIndex < static_cast<int>(playbackHistoryCount)) {
+        return replayPlaybackEntry(playbackHistory[playbackHistoryIndex], addToHistory);
+    }
+
+    if (appState == nullptr) {
+        return false;
+    }
+
+    const AppStateSnapshot snapshot = appState->snapshot();
+    if (snapshot.playback.url.isEmpty()) {
+        return false;
+    }
+
+    String error;
+    return playRequest(snapshot.playback.url, snapshot.playback.title, snapshot.playback.type, snapshot.playback.source, error, addToHistory);
+}
+
+bool stepPlaybackHistory(int direction) {
+    if (playbackHistoryCount == 0 || direction == 0) {
+        return false;
+    }
+
+    int nextIndex = playbackHistoryIndex;
+    if (nextIndex < 0 || nextIndex >= static_cast<int>(playbackHistoryCount)) {
+        nextIndex = direction > 0 ? 0 : static_cast<int>(playbackHistoryCount - 1);
+    } else {
+        nextIndex = (nextIndex + direction + static_cast<int>(playbackHistoryCount)) % static_cast<int>(playbackHistoryCount);
+    }
+
+    playbackHistoryIndex = nextIndex;
+    return replayPlaybackEntry(playbackHistory[nextIndex], false);
+}
+
+void applyVolumePercent(uint8_t volumePercent) {
+    if (settings == nullptr || audioPlayer == nullptr || soundEffects == nullptr || deferredActions == nullptr) {
+        return;
+    }
+
+    settings->device.savedVolumePercent = volumePercent;
+    audioPlayer->setVolumePercent(volumePercent);
+    soundEffects->setVolumePercent(volumePercent);
+    deferredActions->pendingVolume = volumePercent;
+    deferredActions->volumePending = false;
+    deferredActions->volumeSavePending = true;
+    deferredActions->volumeSaveAt = millis() + kVolumePersistDelayMs;
+    if (mqttManager != nullptr) {
+        mqttManager->publishState();
+    }
+}
+
+void changeVolumeBy(int delta) {
+    if (settings == nullptr) {
+        return;
+    }
+
+    int nextVolume = static_cast<int>(settings->device.savedVolumePercent) + delta;
+    if (nextVolume < 0) {
+        nextVolume = 0;
+    }
+    if (nextVolume > 100) {
+        nextVolume = 100;
+    }
+
+    applyVolumePercent(static_cast<uint8_t>(nextVolume));
+}
+
+bool executeButtonAction(const String& action) {
+    if (action == "none") {
+        return false;
+    }
+
+    if (displayManager != nullptr) {
+        displayManager->markActivity();
+    }
+
+    if (action == "previous") {
+        return stepPlaybackHistory(-1);
+    }
+    if (action == "next") {
+        return stepPlaybackHistory(1);
+    }
+    if (action == "play_pause") {
+        const AppStateSnapshot snapshot = appState->snapshot();
+        if (snapshot.playback.state == "playing" || snapshot.playback.state == "buffering") {
+            audioPlayer->stop();
+            if (mqttManager != nullptr) {
+                mqttManager->publishState();
+            }
+            return true;
+        }
+        return replayCurrentPlaybackSelection(false);
+    }
+    if (action == "replay_current") {
+        return replayCurrentPlaybackSelection(false);
+    }
+    if (action == "stop") {
+        audioPlayer->stop();
+        if (mqttManager != nullptr) {
+            mqttManager->publishState();
+        }
+        return true;
+    }
+    if (action == "volume_up") {
+        changeVolumeBy(DefaultConfig::BUTTON_VOLUME_STEP_PERCENT);
+        return true;
+    }
+    if (action == "volume_down") {
+        changeVolumeBy(-static_cast<int>(DefaultConfig::BUTTON_VOLUME_STEP_PERCENT));
+        return true;
+    }
+
+    return false;
+}
+
+void pollPhysicalButton(PhysicalButtonState& button) {
+    const bool pressed = digitalRead(button.pin) == HIGH;
+    const unsigned long now = millis();
+
+    if (pressed != button.lastSampledPressed) {
+        button.lastSampledPressed = pressed;
+        button.lastTransitionAt = now;
+    }
+
+    if ((now - button.lastTransitionAt) < kButtonDebounceMs || pressed == button.stablePressed) {
+        return;
+    }
+
+    button.stablePressed = pressed;
+    if (!button.stablePressed) {
+        return;
+    }
+
+    const String action = buttonActionFor(button);
+    const bool handled = executeButtonAction(action);
+    Serial.printf("[input] %s on GPIO%u action=%s handled=%s\n",
+                  button.label,
+                  static_cast<unsigned>(button.pin),
+                  action.c_str(),
+                  handled ? "yes" : "no");
+}
+
+void pollPhysicalButtons() {
+    pollPhysicalButton(button1);
+    pollPhysicalButton(button2);
 }
 
 void enterLowBatteryDeepSleep(uint8_t batteryPercent, float voltage, const char* reason) {
@@ -376,7 +636,7 @@ bool saveSettingsFromJson(JsonVariantConst root, String& error) {
     return true;
 }
 
-bool playRequest(const String& url, const String& label, const String& type, const String& source, String& error) {
+bool playRequest(const String& url, const String& label, const String& type, const String& source, String& error, bool addToHistory) {
     if (url.isEmpty()) {
         error = "URL is required";
         return false;
@@ -388,6 +648,7 @@ bool playRequest(const String& url, const String& label, const String& type, con
     deferredActions->playUrl = url;
     deferredActions->playLabel = label;
     deferredActions->playType = type;
+    deferredActions->playAddToHistory = addToHistory;
     if (!source.isEmpty()) {
         deferredActions->playSource = source;
     } else {
@@ -413,7 +674,7 @@ void handleMqttCommand(const PlaybackCommand& command) {
         const AppStateSnapshot snapshot = appState->snapshot();
         if (!snapshot.playback.url.isEmpty()) {
             String ignored;
-            playRequest(snapshot.playback.url, snapshot.playback.title, snapshot.playback.type, snapshot.playback.source, ignored);
+            playRequest(snapshot.playback.url, snapshot.playback.title, snapshot.playback.type, snapshot.playback.source, ignored, true);
         }
     } else if (command.action == "playpause") {
         const AppStateSnapshot snapshot = appState->snapshot();
@@ -421,13 +682,15 @@ void handleMqttCommand(const PlaybackCommand& command) {
             audioPlayer->stop();
         } else if (!snapshot.playback.url.isEmpty()) {
             String ignored;
-            playRequest(snapshot.playback.url, snapshot.playback.title, snapshot.playback.type, snapshot.playback.source, ignored);
+            playRequest(snapshot.playback.url, snapshot.playback.title, snapshot.playback.type, snapshot.playback.source, ignored, true);
         }
-    } else if (command.action == "next" || command.action == "previous") {
-        // The notifier has no queue-based transport controls; accept these commands as no-ops.
+    } else if (command.action == "next") {
+        stepPlaybackHistory(1);
+    } else if (command.action == "previous") {
+        stepPlaybackHistory(-1);
     } else {
         String ignored;
-        playRequest(command.url, command.label, command.mediaType.isEmpty() ? command.action : command.mediaType, command.source, ignored);
+        playRequest(command.url, command.label, command.mediaType.isEmpty() ? command.action : command.mediaType, command.source, ignored, true);
     }
     mqttManager->publishState();
 }
@@ -472,6 +735,13 @@ void processDeferredActions() {
             deferredActions->playLabel,
             deferredActions->playType,
             deferredActions->playSource);
+        if (deferredActions->playAddToHistory) {
+            rememberPlaybackSelection(
+                deferredActions->playUrl,
+                deferredActions->playLabel,
+                deferredActions->playType,
+                deferredActions->playSource);
+        }
         deferredActions->playPending = false;
         mqttManager->publishState();
     }
@@ -502,6 +772,8 @@ void setup() {
         Serial.println("[boot] failed to initialize app state mutex");
         Serial.flush();
     }
+
+    initializeButtons();
 
     pinMode(DefaultConfig::STATUS_LED_PIN, OUTPUT);
     digitalWrite(DefaultConfig::STATUS_LED_PIN, LOW);
@@ -545,7 +817,7 @@ void setup() {
         []() { return *settings; },
         saveSettingsFromJson,
         [](const String& url, const String& label, const String& type, String& error) {
-            return playRequest(url, label, type, "", error);
+            return playRequest(url, label, type, "", error, true);
         },
         []() {
             deferredActions->stopPending = true;
@@ -612,6 +884,7 @@ void loop() {
     }
 
     processDeferredActions();
+    pollPhysicalButtons();
     wifiManager->loop();
     audioPlayer->loop();
     const bool batteryUpdated = batteryMonitor->loop(isBatterySamplingAllowed());

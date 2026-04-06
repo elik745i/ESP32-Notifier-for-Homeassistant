@@ -38,6 +38,7 @@ void DisplayManager::applySettings(const OledSettings& settings) {
     settings_ = settings;
     ssd1306_.reset();
     sh1106_.reset();
+    lastActivityAt_ = millis();
     if (!settings_.enabled) {
         return;
     }
@@ -62,6 +63,11 @@ void DisplayManager::applySettings(const OledSettings& settings) {
 void DisplayManager::setBootMessage(const String& message) {
     bootMessage_ = message;
     lastSignature_ = "";
+}
+
+void DisplayManager::markActivity() {
+    lastActivityAt_ = millis();
+    setDimmed(false);
 }
 
 void DisplayManager::powerOff() {

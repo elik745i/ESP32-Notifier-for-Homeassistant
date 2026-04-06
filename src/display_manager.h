@@ -14,6 +14,7 @@ class DisplayManager {
     void begin(const OledSettings& settings);
     void applySettings(const OledSettings& settings);
     void setBootMessage(const String& message);
+    void markActivity();
     void powerOff();
     void loop(const AppStateSnapshot& state);
 

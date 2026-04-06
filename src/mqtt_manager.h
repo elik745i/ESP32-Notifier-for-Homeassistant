@@ -28,6 +28,9 @@ class MqttManager {
 
   private:
     static constexpr uint8_t MQTT_MAX_CONSECUTIVE_FAILURES = 10;
+    static constexpr uint16_t MQTT_KEEP_ALIVE_SECONDS = 15;
+    static constexpr uint32_t MQTT_RETRY_INTERVAL_MS = 5000UL;
+    static constexpr uint32_t MQTT_STALE_CONNECTION_MS = 90000UL;
 
     AsyncMqttClient client_;
     SettingsBundle settings_;
@@ -37,16 +40,20 @@ class MqttManager {
     bool configured_ = false;
     bool connectionEnabled_ = true;
     bool recoveryRebootRecommended_ = false;
+    bool wifiWasConnected_ = false;
     uint8_t consecutiveFailureCount_ = 0;
     unsigned long lastConnectAttemptAt_ = 0;
     unsigned long lastStatePublishAt_ = 0;
+    unsigned long lastBrokerActivityAt_ = 0;
 
     void configureClient();
     void connectIfNeeded();
+    void handleWiFiState();
     void handleConnected(bool sessionPresent);
     void handleDisconnected(AsyncMqttClientDisconnectReason reason);
     void handleMessage(char* topic, char* payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total);
     void publishJson(const String& topic, const JsonDocument& doc, bool retained);
+    void noteBrokerActivity();
     bool isCredentialFailureReason(AsyncMqttClientDisconnectReason reason) const;
     void clearFrontendError();
     void setFrontendError(const String& message);

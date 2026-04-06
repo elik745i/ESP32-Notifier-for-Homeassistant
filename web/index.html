@@ -295,21 +295,33 @@
                 <strong>Virtual OLED</strong>
                 <span id="oledPreviewMeta" class="scan-status">128 x 64</span>
               </div>
-              <div class="oled-preview-shell">
-                <div id="oledPreview" class="oled-preview-screen">
-                  <div class="oled-preview-top"></div>
-                  <div class="oled-preview-divider oled-preview-divider-top"></div>
-                  <div class="oled-preview-center"></div>
-                  <div id="oledPreviewProgress" class="oled-preview-progress" hidden>
-                    <div id="oledPreviewProgressLabel" class="oled-preview-progress-label">Updating 0%</div>
-                    <div class="oled-preview-progress-bar">
-                      <div id="oledPreviewProgressFill" class="oled-preview-progress-fill"></div>
+              <div class="oled-preview-layout">
+                <label class="oled-button-control">
+                  <span class="oled-button-title">Button 1</span>
+                  <select form="settingsForm" name="device.button1Action"></select>
+                  <small>GPIO5, left side</small>
+                </label>
+                <div class="oled-preview-shell">
+                  <div id="oledPreview" class="oled-preview-screen">
+                    <div class="oled-preview-top"></div>
+                    <div class="oled-preview-divider oled-preview-divider-top"></div>
+                    <div class="oled-preview-center"></div>
+                    <div id="oledPreviewProgress" class="oled-preview-progress" hidden>
+                      <div id="oledPreviewProgressLabel" class="oled-preview-progress-label">Updating 0%</div>
+                      <div class="oled-preview-progress-bar">
+                        <div id="oledPreviewProgressFill" class="oled-preview-progress-fill"></div>
+                      </div>
                     </div>
+                    <div class="oled-preview-divider oled-preview-divider-bottom"></div>
+                    <div class="oled-preview-bottom"></div>
+                    <div id="oledPreviewDisabled" class="oled-preview-disabled" hidden>OLED disabled</div>
                   </div>
-                  <div class="oled-preview-divider oled-preview-divider-bottom"></div>
-                  <div class="oled-preview-bottom"></div>
-                  <div id="oledPreviewDisabled" class="oled-preview-disabled" hidden>OLED disabled</div>
                 </div>
+                <label class="oled-button-control oled-button-control-right">
+                  <span class="oled-button-title">Button 2</span>
+                  <select form="settingsForm" name="device.button2Action"></select>
+                  <small>GPIO6, right side</small>
+                </label>
               </div>
             </div>
             <div class="row">
@@ -355,7 +367,7 @@
               </label>
               <div></div>
             </div>
-            <p class="note">When rotated 90 or 270 degrees the renderer automatically uses the effective portrait resolution so text and OTA progress fit the rotated screen.</p>
+            <p class="note">GPIO5 and GPIO6 are treated as active-high touch/button inputs. Button 1 defaults to Previous Track and Button 2 defaults to Next Track. When rotated 90 or 270 degrees the renderer automatically uses the effective portrait resolution so text and OTA progress fit the rotated screen.</p>
           </form>
         </div>
 

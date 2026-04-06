@@ -529,6 +529,35 @@
     gap: 12px;
   }
 
+  .oled-preview-layout {
+    display: grid;
+    grid-template-columns: minmax(170px, 1fr) minmax(260px, 2fr) minmax(170px, 1fr);
+    align-items: center;
+    gap: 16px;
+  }
+
+  .oled-button-control {
+    display: grid;
+    gap: 8px;
+    align-content: center;
+    justify-items: stretch;
+    text-align: center;
+  }
+
+  .oled-button-control-right {
+    justify-self: end;
+  }
+
+  .oled-button-title {
+    font-size: 0.95rem;
+    font-weight: 700;
+  }
+
+  .oled-button-control small {
+    color: var(--muted);
+    font-size: 0.78rem;
+  }
+
   .oled-preview-shell {
     display: grid;
     place-items: center;
@@ -652,6 +681,17 @@
   .oled-preview-disabled[hidden],
   .oled-preview-progress[hidden] {
     display: none;
+  }
+
+  @media (max-width: 860px) {
+    .oled-preview-layout {
+      grid-template-columns: 1fr;
+    }
+
+    .oled-button-control,
+    .oled-button-control-right {
+      justify-self: stretch;
+    }
   }
 
   .status-list {

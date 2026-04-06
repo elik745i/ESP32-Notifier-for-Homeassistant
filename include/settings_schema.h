@@ -68,6 +68,8 @@ struct DeviceSettings {
     String friendlyName;
     uint8_t savedVolumePercent = 5;
     bool audioMuted = true;
+    String button1Action = "previous";
+    String button2Action = "next";
     bool lowBatterySleepEnabled = false;
     uint8_t lowBatterySleepThresholdPercent = 20;
     uint16_t lowBatteryWakeIntervalMinutes = 15;

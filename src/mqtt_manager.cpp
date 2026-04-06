@@ -92,9 +92,12 @@ void MqttManager::begin(const SettingsBundle& settings, AppState& appState, WiFi
     appState_ = &appState;
     wifiManager_ = &wifiManager;
     commandHandler_ = commandHandler;
+    wifiWasConnected_ = wifiManager.isConnected();
 
     client_.onConnect([this](bool sessionPresent) { handleConnected(sessionPresent); });
     client_.onDisconnect([this](AsyncMqttClientDisconnectReason reason) { handleDisconnected(reason); });
+    client_.onSubscribe([this](uint16_t, uint8_t) { noteBrokerActivity(); });
+    client_.onPublish([this](uint16_t) { noteBrokerActivity(); });
     client_.onMessage([this](char* topic, char* payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total) {
         handleMessage(topic, payload, properties, len, index, total);
     });
@@ -127,9 +130,11 @@ void MqttManager::configureClient() {
     client_.setCredentials(
         settings_.mqtt.username.isEmpty() ? nullptr : settings_.mqtt.username.c_str(),
         settings_.mqtt.username.isEmpty() ? nullptr : settings_.mqtt.password.c_str());
-    client_.setKeepAlive(30);
+    client_.setKeepAlive(MQTT_KEEP_ALIVE_SECONDS);
+    client_.setCleanSession(true);
     client_.setWill(HaBridge::availabilityTopic(settings_).c_str(), 1, true, "offline");
     lastConnectAttemptAt_ = 0;
+    lastBrokerActivityAt_ = 0;
     if (settings_.mqtt.host.isEmpty()) {
         consecutiveFailureCount_ = 0;
         recoveryRebootRecommended_ = false;
@@ -150,7 +155,15 @@ void MqttManager::configureClient() {
 }
 
 void MqttManager::loop() {
+    handleWiFiState();
     connectIfNeeded();
+    if (client_.connected() && lastBrokerActivityAt_ != 0 && millis() - lastBrokerActivityAt_ > MQTT_STALE_CONNECTION_MS) {
+        Serial.printf("[mqtt] no broker activity for %lu ms, forcing reconnect\n",
+                      static_cast<unsigned long>(MQTT_STALE_CONNECTION_MS));
+        lastConnectAttemptAt_ = 0;
+        client_.disconnect(true);
+        return;
+    }
     if (isConnected() && millis() - lastStatePublishAt_ > 30000UL) {
         publishState();
     }
@@ -160,7 +173,7 @@ void MqttManager::connectIfNeeded() {
     if (!connectionEnabled_ || settings_.mqtt.host.isEmpty() || wifiManager_ == nullptr || !wifiManager_->isConnected() || client_.connected()) {
         return;
     }
-    if (millis() - lastConnectAttemptAt_ < 5000UL) {
+    if (millis() - lastConnectAttemptAt_ < MQTT_RETRY_INTERVAL_MS) {
         return;
     }
     Serial.printf("[mqtt] connect attempt %u/%u to %s:%u\n",
@@ -171,11 +184,40 @@ void MqttManager::connectIfNeeded() {
     client_.connect();
 }
 
+void MqttManager::handleWiFiState() {
+    if (wifiManager_ == nullptr) {
+        return;
+    }
+
+    const bool wifiConnected = wifiManager_->isConnected();
+    if (wifiConnected == wifiWasConnected_) {
+        return;
+    }
+
+    wifiWasConnected_ = wifiConnected;
+    if (!wifiConnected) {
+        lastBrokerActivityAt_ = 0;
+        lastConnectAttemptAt_ = millis();
+        if (client_.connected()) {
+            Serial.println("[mqtt] Wi-Fi dropped, forcing MQTT disconnect");
+            client_.disconnect(true);
+        }
+        return;
+    }
+
+    Serial.println("[mqtt] Wi-Fi restored, resetting MQTT session");
+    lastConnectAttemptAt_ = 0;
+    lastBrokerActivityAt_ = 0;
+    client_.disconnect(true);
+}
+
 void MqttManager::handleConnected(bool sessionPresent) {
     (void)sessionPresent;
     Serial.printf("[mqtt] connected host=%s port=%u\n", settings_.mqtt.host.c_str(), settings_.mqtt.port);
     consecutiveFailureCount_ = 0;
     recoveryRebootRecommended_ = false;
+    wifiWasConnected_ = wifiManager_ != nullptr && wifiManager_->isConnected();
+    noteBrokerActivity();
     clearFrontendError();
     if (appState_ != nullptr) {
         appState_->setMqttConnected(true);
@@ -201,6 +243,7 @@ void MqttManager::handleConnected(bool sessionPresent) {
 
 void MqttManager::handleDisconnected(AsyncMqttClientDisconnectReason reason) {
     Serial.printf("[mqtt] disconnected reason=%d\n", static_cast<int>(reason));
+    lastBrokerActivityAt_ = 0;
     if (appState_ != nullptr) {
         appState_->setMqttConnected(false);
     }
@@ -212,6 +255,8 @@ void MqttManager::handleMessage(char* topic, char* payload, AsyncMqttClientMessa
     if (index != 0 || total != len || commandHandler_ == nullptr) {
         return;
     }
+
+    noteBrokerActivity();
 
     const String topicValue = topic;
     const String payloadValue = payloadToString(payload, len);
@@ -312,6 +357,7 @@ void MqttManager::publishJson(const String& topic, const JsonDocument& doc, bool
     String payload;
     serializeJson(doc, payload);
     client_.publish(topic.c_str(), 1, retained, payload.c_str());
+    noteBrokerActivity();
 }
 
 void MqttManager::publishState() {
@@ -432,6 +478,7 @@ bool MqttManager::requestDisconnect(String& error) {
     consecutiveFailureCount_ = 0;
     recoveryRebootRecommended_ = false;
     lastConnectAttemptAt_ = millis();
+    lastBrokerActivityAt_ = 0;
     client_.disconnect(true);
     if (appState_ != nullptr) {
         appState_->setMqttConnected(false);
@@ -479,6 +526,10 @@ bool MqttManager::isCredentialFailureReason(AsyncMqttClientDisconnectReason reas
         default:
             return false;
     }
+}
+
+void MqttManager::noteBrokerActivity() {
+    lastBrokerActivityAt_ = millis();
 }
 
 void MqttManager::clearFrontendError() {

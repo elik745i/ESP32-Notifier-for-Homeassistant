@@ -42,10 +42,13 @@ The repository builds successfully with PlatformIO and emits [firmware.bin](.pio
 
 Current firmware version in this repository:
 
-- `v0.1.8`
+- `v0.1.9`
 
 Recent firmware and web UI updates included in this version:
 
+- documentation now covers the Notifier V3 hardware build based on the ESP32-S3 Super Mini, PCM5102 DAC, dual TTP223 touch sensors, buzzer, and 0.96 inch OLED
+- added the Notifier V3 circuit diagram and direct casing STL references to the repository documentation
+- added a PCM5102 bring-up tutorial reference and jumper guidance for the common purple PCM5102 breakout used by this build
 - the Firmware tab now lists each GitHub firmware asset separately, so Standard and HACS builds appear as distinct install options with inline notes explaining what each variant is for
 - release refresh from GitHub now retries automatically in the background after a single Check Releases action instead of requiring repeated button presses
 - Home Assistant HACS media-player playback now accepts the custom integration playmedia payload format more reliably
@@ -78,77 +81,123 @@ Current limitation:
 - use the `esp32_notifier_hacs` build together with [`bkbilly/mqtt_media_player`](https://github.com/bkbilly/mqtt_media_player) when you want the notifier discovered as a Home Assistant media player
 - if the firmware is built with the diagnostic audio-disable flag enabled, playback actions will not start audio until that build flag is removed
 
-## Dev Board
+## Notifier V3 Hardware
 
-This project is intended around the Wemos / LOLIN32 Lite style ESP32 board.
+The current documented hardware target is Notifier V3, built around the ESP32-S3 Super Mini and these external modules:
 
-The original hardware write-up also references the LOLIN32 Mini class board family because those boards integrate useful battery features such as:
+- ESP32-S3 Super Mini controller board
+- PCM5102 I2S DAC breakout
+- 0.96 inch I2C OLED display
+- two TTP223 touch sensor modules
+- active buzzer
 
-- Li-Po connector
-- charger circuitry
-- battery protection
+Repository-local hardware references:
 
-That makes them a practical fit for a compact battery-backed notifier. One important note from the hardware overview is that battery-voltage measurement still requires an external divider on a free ADC-capable GPIO.
+- Circuit diagram: [Docs/Notifier_v3.png](Docs/Notifier_v3.png)
+- ESP32-S3 pinout image: [Docs/esp32-s3_pinout.jpeg](Docs/esp32-s3_pinout.jpeg)
+- STL folder: [3D/STL](3D/STL)
+- Top cover STL: [3D/STL/Notifier_box_v3_top.stl](3D/STL/Notifier_box_v3_top.stl)
+- Back cover STL: [3D/STL/Notifier_box_v3_bot.stl](3D/STL/Notifier_box_v3_bot.stl)
 
-Reference links and local documentation:
+Notifier V3 circuit diagram:
 
-- Dev board page: https://www.espboards.dev/esp32/lolin32-lite/
-- Board documentation PDF: [Docs/Wemos-ESP32-Lolin32-Board-BOOK-ENGLISH.pdf](Docs/Wemos-ESP32-Lolin32-Board-BOOK-ENGLISH.pdf)
-- Case / enclosure files: [3D](3D)
-- Demo / reference video: https://www.youtube.com/watch?v=mt_Qr-lGUJ4
+![Notifier V3 circuit diagram](Docs/Notifier_v3.png)
 
-Pinout image used for this board:
+Useful external bring-up tutorial for the PCM5102 on ESP32:
 
-![LOLIN32 Lite pinout](Docs/lolin32_lite_pinout.png)
+- https://www.makerguides.com/playing-audio-with-esp32-and-pcm5102/
 
-## Hardware Wiring
+That tutorial is a good practical reference for first audio bring-up, especially when you want to validate PCM5102 power, I2S wiring, and line-out behavior before testing the full notifier stack.
 
-Known required pins:
+### ESP32-S3 Super Mini Wiring
 
-These values are the current firmware defaults and can be changed later from the web UI if your hardware wiring differs.
+The repository also includes ESP32-S3 build profiles in [platformio.ini](platformio.ini):
+
+- `esp32s3_notifier`
+- `esp32s3_notifier_hacs`
+
+These profiles are configured for the ESP32-S3 Super Mini / Waveshare ESP32-S3-Zero class board using PlatformIO's `esp32-s3-devkitm-1` board definition, which Waveshare recommends for PlatformIO. The default repo configuration assumes the common `4 MB flash / 2 MB PSRAM` variant and enables native USB CDC on boot for serial logs over the USB-C port.
+
+Suggested default wiring for those ESP32-S3 profiles:
 
 | Function | GPIO |
 |---|---:|
-| Status LED | 22 |
-| Battery ADC | 36 |
-| I2S DOUT | 25 |
-| I2S LRCLK / WS | 26 |
-| I2S BCLK | 27 |
-| OLED SDA | 23 |
-| OLED SCL | 19 |
+| Status LED | 48 |
+| Battery ADC | 4 |
+| I2S DOUT | 12 |
+| I2S LRCLK / WS | 11 |
+| I2S BCLK | 10 |
+| OLED SDA | 8 |
+| OLED SCL | 9 |
+| Touch button 1 | 5 |
+| Touch button 2 | 6 |
+| Buzzer | 7 |
 
-OLED assumptions:
+These defaults avoid the board's built-in RGB LED path and match the GPIOs exposed on the Super Mini board. They are still configurable later from the web UI or in the build flags if you rewire.
 
-- 0.96 inch I2C OLED
-- SSD1306 128x64 or SH1106 128x64
-- default I2C address `0x3C`
+Board-specific notes:
+
+- onboard WS2812 RGB LED is on `GPIO21`, so leave that pin free unless you intentionally want to drive the LED
+- native USB is used for upload and serial logs; if flashing is unreliable, hold `BOOT` while connecting USB-C and then retry
+- if your Super Mini is the larger `8 MB flash / 8 MB PSRAM` variant instead of `4 MB / 2 MB`, switch the partition file back to [partitions/ota_8m.csv](partitions/ota_8m.csv) and increase `board_upload.flash_size`
+
+Module wiring summary for Notifier V3:
+
+| Module | Pin | ESP32-S3 Super Mini GPIO |
+|---|---|---:|
+| PCM5102 | BCK | 10 |
+| PCM5102 | LCK / WS | 11 |
+| PCM5102 | DIN | 12 |
+| PCM5102 | GND | GND |
+| PCM5102 | VIN | 5V or module VIN input expected by your breakout |
+| OLED | SCL | 9 |
+| OLED | SDA | 8 |
+| OLED | VCC | 3V3 |
+| OLED | GND | GND |
+| TTP223 #1 | OUT | 5 |
+| TTP223 #2 | OUT | 6 |
+| TTP223 modules | VCC | 3V3 |
+| TTP223 modules | GND | GND |
+| Buzzer | signal | 7 |
+| Buzzer | GND | GND |
+
+PCM5102 notes for the common purple breakout shown in [Docs/Notifier_v3.png](Docs/Notifier_v3.png):
+
+- the common jumper setup for 3-wire ESP32 use is `1 = L`, `2 = L`, `3 = H`, `4 = L`
+- the `SCK` header pin is left unconnected to the ESP32 in this project
+- the back-side jumper configuration forces the module into the expected no-MCLK mode
+- the PCM5102 is a line-out DAC, so connect it to an amplifier or powered speaker, not directly to a passive speaker
 
 ## Hardware Modules
 
-The project overview describes a compact module stack built around readily available boards:
+Notifier V3 is documented around this practical module stack:
 
-- ESP32 LOLIN32 Lite / Mini style controller board
-- UDA1334 I2S stereo DAC / audio driver
-- PAM8403 class-D amplifier module
-- Li-Po battery pack
-- passive speaker, including in-ceiling speaker use cases
+- ESP32-S3 Super Mini
+- PCM5102 I2S DAC breakout
+- 0.96 inch SSD1306 or SH1106 I2C OLED
+- two TTP223 touch buttons
+- active buzzer
+- optional amplifier or powered speaker connected to the PCM5102 line output
 
-Why this combination was chosen:
+Why this combination is used in V3:
 
-- the ESP32 board provides Wi-Fi, battery charging convenience, and low-power control logic
-- the UDA1334 cleanly handles I2S audio output without forcing a specific integrated amplifier choice
-- the PAM8403 is small, cheap, and good enough for notifier duty even if it is not an audiophile amplifier
-- the battery-backed design makes the notifier easier to place without depending on a permanently available external supply
+- the ESP32-S3 Super Mini keeps the board compact while still exposing enough GPIO for audio, display, buttons, and battery measurement
+- the PCM5102 works cleanly with the firmware's current 3-wire I2S audio path
+- the TTP223 modules provide simple physical controls without mechanical button hardware inside the printed case
+- the OLED gives immediate local status feedback for Wi-Fi, playback, and setup state
+- the buzzer provides a lightweight local indicator path in addition to streamed audio
 
 ## Parts and Resources
 
-The project overview explicitly calls out these practical resources:
+Practical resources for the current V3 build:
 
-- Main board family: LOLIN32 Lite / Mini style ESP32 board
-- Audio DAC: UDA1334 I2S stereo module
-- Amplifier: PAM8403 class-D amplifier board
-- Power: Li-Po battery pack, approximately `1800 mAh` in the example build
-- Extra passive components: bulk capacitor and wiring as needed
+- Main board family: ESP32-S3 Super Mini
+- Audio DAC: PCM5102 breakout module
+- Touch inputs: 2x TTP223
+- Display: 0.96 inch I2C OLED
+- Local indicator: active buzzer
+- Enclosure: [3D/STL/Notifier_box_v3_top.stl](3D/STL/Notifier_box_v3_top.stl) and [3D/STL/Notifier_box_v3_bot.stl](3D/STL/Notifier_box_v3_bot.stl)
+- Reference audio bring-up tutorial: https://www.makerguides.com/playing-audio-with-esp32-and-pcm5102/
 
 Related external references mentioned in the overview:
 
@@ -291,7 +340,10 @@ The project overview describes a compact printed enclosure workflow:
 - confirm dimensions from PCB photos, caliper measurements, and known reference spacing
 - secure the finished modules inside the enclosure with adhesive mounting rather than complicated brackets
 
-Repository-local enclosure resources are available in [3D](3D).
+Repository-local enclosure resources are available in [3D](3D), with the current Notifier V3 printable parts here:
+
+- Top cover: [3D/STL/Notifier_box_v3_top.stl](3D/STL/Notifier_box_v3_top.stl)
+- Back cover: [3D/STL/Notifier_box_v3_bot.stl](3D/STL/Notifier_box_v3_bot.stl)
 
 The hardware story in the overview is useful context here: the case design was driven by the desire to keep the notifier compact, battery-friendly, and resistant to the heat problems caused by earlier amplifier choices.
 
@@ -417,9 +469,9 @@ Recommended manifest shape:
 
 ```json
 {
-  "version": "v0.1.6",
-  "url": "https://github.com/elik745i/ESP32-Notifier-for-Homeassistant/releases/download/v0.1.6/esp32-notifier-v0.1.6.bin",
-  "asset": "esp32-notifier-v0.1.6.bin",
+  "version": "v0.1.9",
+  "url": "https://github.com/elik745i/ESP32-Notifier-for-Homeassistant/releases/download/v0.1.9/esp32-notifier-v0.1.9.bin",
+  "asset": "esp32-notifier-v0.1.9.bin",
   "sha256": "<optional sha256>",
   "channel": "stable"
 }
@@ -540,4 +592,22 @@ git commit -m "Initial ESP32 notifier firmware"
 git remote add origin https://github.com/elik745i/ESP32-Notifier-for-Homeassistant.git
 git push -u origin main
 ```
+
+## Release Assets
+
+The repository currently defines these release-oriented PlatformIO environments:
+
+- `esp32_notifier`
+- `esp32_notifier_hacs`
+- `esp32_notifier_hacs_slim`
+- `esp32s3_notifier`
+- `esp32s3_notifier_hacs`
+
+Recommended release asset names for `v0.1.9`:
+
+- `esp32-notifier-v0.1.9.bin`
+- `esp32-notifier-hacs-v0.1.9.bin`
+- `esp32-notifier-hacs-slim-v0.1.9.bin`
+- `esp32s3-notifier-v0.1.9.bin`
+- `esp32s3-notifier-hacs-v0.1.9.bin`
 

@@ -2,6 +2,42 @@
 
 #include <stdint.h>
 
+#ifndef APP_DEFAULT_OLED_SDA_PIN
+#define APP_DEFAULT_OLED_SDA_PIN 23
+#endif
+
+#ifndef APP_DEFAULT_OLED_SCL_PIN
+#define APP_DEFAULT_OLED_SCL_PIN 19
+#endif
+
+#ifndef APP_DEFAULT_STATUS_LED_PIN
+#define APP_DEFAULT_STATUS_LED_PIN 22
+#endif
+
+#ifndef APP_DEFAULT_BATTERY_ADC_PIN
+#define APP_DEFAULT_BATTERY_ADC_PIN 36
+#endif
+
+#ifndef APP_DEFAULT_BUTTON1_PIN
+#define APP_DEFAULT_BUTTON1_PIN 5
+#endif
+
+#ifndef APP_DEFAULT_BUTTON2_PIN
+#define APP_DEFAULT_BUTTON2_PIN 6
+#endif
+
+#ifndef APP_DEFAULT_I2S_DOUT_PIN
+#define APP_DEFAULT_I2S_DOUT_PIN 25
+#endif
+
+#ifndef APP_DEFAULT_I2S_WS_PIN
+#define APP_DEFAULT_I2S_WS_PIN 26
+#endif
+
+#ifndef APP_DEFAULT_I2S_BCLK_PIN
+#define APP_DEFAULT_I2S_BCLK_PIN 27
+#endif
+
 namespace DefaultConfig {
 
 constexpr char WIFI_SSID[] = "";
@@ -33,6 +69,7 @@ constexpr uint16_t BATTERY_MOVING_AVERAGE_WINDOW = 10;
 
 constexpr uint8_t DEFAULT_VOLUME_PERCENT = 5;
 constexpr bool DEFAULT_AUDIO_MUTED = true;
+constexpr uint8_t BUTTON_VOLUME_STEP_PERCENT = 5;
 constexpr int AUDIO_BUFFER_SIZE_RAM = 24 * 1024;
 constexpr int AUDIO_BUFFER_SIZE_PSRAM = 160 * 1024;
 constexpr bool LOW_BATTERY_SLEEP_ENABLED = false;
@@ -49,15 +86,19 @@ constexpr char OLED_DRIVER[] = "ssd1306";
 constexpr uint8_t OLED_WIDTH = 128;
 constexpr uint8_t OLED_HEIGHT = 64;
 constexpr uint16_t OLED_ROTATION = 0;
-constexpr uint8_t OLED_SDA_PIN = 23;
-constexpr uint8_t OLED_SCL_PIN = 19;
+constexpr uint8_t OLED_SDA_PIN = APP_DEFAULT_OLED_SDA_PIN;
+constexpr uint8_t OLED_SCL_PIN = APP_DEFAULT_OLED_SCL_PIN;
 constexpr int8_t OLED_RESET_PIN = -1;
 constexpr uint16_t OLED_DIM_TIMEOUT_SECONDS = 0;
 
-constexpr uint8_t STATUS_LED_PIN = 22;
-constexpr uint8_t BATTERY_ADC_PIN = 36;
-constexpr uint8_t I2S_DOUT_PIN = 25;
-constexpr uint8_t I2S_WS_PIN = 26;
-constexpr uint8_t I2S_BCLK_PIN = 27;
+constexpr uint8_t STATUS_LED_PIN = APP_DEFAULT_STATUS_LED_PIN;
+constexpr uint8_t BATTERY_ADC_PIN = APP_DEFAULT_BATTERY_ADC_PIN;
+constexpr uint8_t BUTTON1_PIN = APP_DEFAULT_BUTTON1_PIN;
+constexpr uint8_t BUTTON2_PIN = APP_DEFAULT_BUTTON2_PIN;
+constexpr char BUTTON1_DEFAULT_ACTION[] = "previous";
+constexpr char BUTTON2_DEFAULT_ACTION[] = "next";
+constexpr uint8_t I2S_DOUT_PIN = APP_DEFAULT_I2S_DOUT_PIN;
+constexpr uint8_t I2S_WS_PIN = APP_DEFAULT_I2S_WS_PIN;
+constexpr uint8_t I2S_BCLK_PIN = APP_DEFAULT_I2S_BCLK_PIN;
 
 }  // namespace DefaultConfig

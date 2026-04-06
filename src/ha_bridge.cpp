@@ -12,6 +12,9 @@ void fillDevice(const SettingsBundle& settings, JsonObject device) {
     device["manufacturer"] = "DIY";
     device["model"] = "ESP32 Wi-Fi Audio Notifier";
     device["sw_version"] = APP_VERSION;
+    if (!settings.device.deviceName.isEmpty()) {
+        device["configuration_url"] = "http://" + settings.device.deviceName + ".local/";
+    }
 }
 
 String baseDiscoveryPrefix() {

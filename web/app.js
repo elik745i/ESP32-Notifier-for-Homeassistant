@@ -25,6 +25,7 @@ const state = {
   wifiConnectInProgress: false,
   mqttConnectInProgress: false,
   mqttActionInProgress: "",
+  stationRedirectInProgress: false,
 };
 
 const SETTINGS_AUTOSAVE_DELAY_MS = 900;
@@ -103,6 +104,63 @@ function namedField(name) {
 
 function oledPreviewNode(selector) {
   return elements.oledPreview?.querySelector(selector) || null;
+}
+
+function defaultButtonActionForField(fieldName) {
+  return fieldName === "device.button1Action" ? "previous" : "next";
+}
+
+function availableButtonActionOptions() {
+  const audioEnabled = Boolean(state.status?.firmware?.audioEnabled ?? true);
+  const options = [
+    { value: "none", label: "No Action" },
+    { value: "volume_down", label: "Volume Down (-5%)" },
+    { value: "volume_up", label: "Volume Up (+5%)" },
+  ];
+
+  if (!audioEnabled) {
+    return options;
+  }
+
+  return [
+    { value: "previous", label: "Previous Track" },
+    { value: "next", label: "Next Track" },
+    { value: "play_pause", label: "Play / Pause" },
+    { value: "replay_current", label: "Replay Current" },
+    { value: "stop", label: "Stop Playback" },
+    ...options,
+  ];
+}
+
+function populateButtonActionSelect(fieldName) {
+  const field = namedField(fieldName);
+  if (!field) {
+    return;
+  }
+
+  const options = availableButtonActionOptions();
+  const signature = options.map((option) => option.value).join("|");
+  const key = fieldName.split(".").pop();
+  const currentValue = String(field.value || state.settings?.device?.[key] || defaultButtonActionForField(fieldName)).trim();
+
+  if (field.dataset.optionSignature !== signature) {
+    field.innerHTML = "";
+    for (const optionConfig of options) {
+      const option = document.createElement("option");
+      option.value = optionConfig.value;
+      option.textContent = optionConfig.label;
+      field.appendChild(option);
+    }
+    field.dataset.optionSignature = signature;
+  }
+
+  const values = [...field.options].map((option) => option.value);
+  field.value = values.includes(currentValue) ? currentValue : defaultButtonActionForField(fieldName);
+}
+
+function populateButtonActionSelects() {
+  populateButtonActionSelect("device.button1Action");
+  populateButtonActionSelect("device.button2Action");
 }
 
 function loadRecentPlayback() {
@@ -542,6 +600,36 @@ function setMqttConnectStatus(message, isError = false) {
   elements.mqttConnectStatus.style.color = isError ? "#b42318" : "";
 }
 
+function isApHost() {
+  const host = String(window.location.hostname || "").trim();
+  return host === "192.168.4.1";
+}
+
+function usableStationIp(status) {
+  const stationIp = String(status?.network?.ip || "").trim();
+  if (!status?.network?.wifiConnected || !stationIp || stationIp === "0.0.0.0" || stationIp === "192.168.4.1") {
+    return "";
+  }
+  return stationIp;
+}
+
+function maybeRedirectToStationIp(status, { force = false } = {}) {
+  if (state.stationRedirectInProgress) {
+    return;
+  }
+
+  const stationIp = usableStationIp(status);
+  if (!stationIp || stationIp === window.location.hostname || (!force && !isApHost())) {
+    return;
+  }
+
+  state.stationRedirectInProgress = true;
+  setMessage(`Wi-Fi connected. Redirecting to ${stationIp}...`);
+  window.setTimeout(() => {
+    window.location.href = `http://${stationIp}/`;
+  }, 1200);
+}
+
 function isNumericLikeField(field) {
   return field?.type === "number" || field?.id === "batteryMeasuredVoltage";
 }
@@ -599,6 +687,17 @@ async function pollStatusUntil(predicate, attempts, delayMs) {
   }
 
   return false;
+}
+
+async function waitForSettingsIdle(attempts = 50, delayMs = 100) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (!state.settingsLoading && !state.settingsSaving) {
+      return true;
+    }
+    await delay(delayMs);
+  }
+
+  return !state.settingsLoading && !state.settingsSaving;
 }
 
 function oledDimensions() {
@@ -748,6 +847,7 @@ async function request(path, options = {}) {
 
 function fillForm(data) {
   state.settingsLoading = true;
+  populateButtonActionSelects();
   for (const [section, sectionValue] of Object.entries(data)) {
     if (sectionValue === null || typeof sectionValue !== "object") {
       continue;
@@ -764,6 +864,7 @@ function fillForm(data) {
       }
     }
   }
+  populateButtonActionSelects();
   const measuredVoltage = state.status?.battery?.voltage ?? (data.battery?.calibrationMultiplier && state.status?.battery?.rawAdcVoltage
     ? data.battery.calibrationMultiplier * state.status.battery.rawAdcVoltage
     : "");
@@ -1047,6 +1148,7 @@ function renderWifiHero(connected, ipAddress, rssi) {
 
 function renderStatus(status) {
   state.status = status;
+  maybeRedirectToStationIp(status);
   const ota = status.otaManager || status.ota || {};
   const wifiConnected = Boolean(status.network.wifiConnected);
   const mqttConnected = Boolean(status.network.mqttConnected);
@@ -1139,6 +1241,7 @@ function renderStatus(status) {
 
   updateWifiActionButton();
   updateMqttActionButton();
+  populateButtonActionSelects();
   renderOledPreview();
 }
 
@@ -1147,9 +1250,12 @@ function updateWifiActionButton() {
     return;
   }
 
-  const connectMode = state.wifiSelectionPending || state.wifiConnectInProgress;
+  const ssid = String(namedField("wifi.ssid")?.value || "").trim();
+  const password = String(namedField("wifi.password")?.value || "").trim();
+  const manualCredentialsReady = Boolean(ssid && password);
+  const connectMode = state.wifiSelectionPending || manualCredentialsReady || state.wifiConnectInProgress;
 
-  elements.scanWifiButton.textContent = connectMode ? "Connect Wi-Fi" : "Scan Network";
+  elements.scanWifiButton.textContent = connectMode ? "Connect" : "Scan Network";
   elements.scanWifiButton.classList.toggle("secondary", !connectMode);
 }
 
@@ -1399,19 +1505,27 @@ async function connectWifi() {
   setScanStatus(`Saving Wi-Fi settings for ${ssid}...`);
 
   try {
+    if (state.settingsSaveTimer) {
+      window.clearTimeout(state.settingsSaveTimer);
+      state.settingsSaveTimer = null;
+    }
+
+    await waitForSettingsIdle();
     await saveSettings({ silent: true });
     setMessage(`Wi-Fi settings saved for ${ssid}`);
     setScanStatus(`Connecting to ${ssid}...`);
 
     const connected = await pollStatusUntil(
-      (status) => Boolean(status?.network?.wifiConnected),
-      25,
+      (status) => Boolean(usableStationIp(status)),
+      30,
       1000,
     );
 
     if (connected) {
-      setScanStatus(`Connected to ${state.status?.network?.ssid || ssid}`);
-      setMessage(`Wi-Fi connected to ${state.status?.network?.ssid || ssid}`);
+      const stationIp = usableStationIp(state.status);
+      setScanStatus(`Connected to ${state.status?.network?.ssid || ssid}${stationIp ? ` at ${stationIp}` : ""}`);
+      setMessage(`Wi-Fi connected to ${state.status?.network?.ssid || ssid}${stationIp ? ` at ${stationIp}` : ""}`);
+      maybeRedirectToStationIp(state.status, { force: true });
     } else {
       setScanStatus("Wi-Fi settings saved. Connection is still in progress.");
       setMessage("Wi-Fi settings saved. Waiting for connection.");
@@ -1731,7 +1845,9 @@ async function copyCurrentUrl() {
 }
 
 elements.scanWifiButton.addEventListener("click", () => {
-  const shouldConnect = state.wifiSelectionPending;
+  const ssid = String(namedField("wifi.ssid")?.value || "").trim();
+  const password = String(namedField("wifi.password")?.value || "").trim();
+  const shouldConnect = state.wifiSelectionPending || Boolean(ssid && password);
   return (shouldConnect ? connectWifi() : scanWifiNetworks()).catch(handleError);
 });
 elements.playbackActionButton?.addEventListener("click", () => handlePlaybackAction().catch(handleError));
@@ -1885,6 +2001,7 @@ setupTabs();
 setupPasswordToggles();
 renderRecentPlayback();
 updateWifiActionButton();
+populateButtonActionSelects();
 renderOledPreview();
 loadRadioCountries().catch(handleError);
 
