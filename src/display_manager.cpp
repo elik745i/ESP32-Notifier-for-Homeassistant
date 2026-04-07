@@ -65,6 +65,13 @@ void DisplayManager::setBootMessage(const String& message) {
     lastSignature_ = "";
 }
 
+void DisplayManager::showTemporaryCenterText(const String& message, unsigned long durationMs) {
+    temporaryCenterText_ = message;
+    temporaryCenterTextUntilMs_ = millis() + durationMs;
+    lastSignature_ = "";
+    markActivity();
+}
+
 void DisplayManager::markActivity() {
     lastActivityAt_ = millis();
     setDimmed(false);
@@ -124,6 +131,9 @@ void DisplayManager::setDimmed(bool dimmed) {
 }
 
 String DisplayManager::centerTextForState(const AppStateSnapshot& state) const {
+    if (!temporaryCenterText_.isEmpty() && static_cast<long>(millis() - temporaryCenterTextUntilMs_) < 0) {
+        return temporaryCenterText_;
+    }
     if (state.ota.busy) {
         return state.ota.phase.isEmpty() ? String("OTA updating") : state.ota.phase;
     }

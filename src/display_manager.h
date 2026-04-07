@@ -14,6 +14,7 @@ class DisplayManager {
     void begin(const OledSettings& settings);
     void applySettings(const OledSettings& settings);
     void setBootMessage(const String& message);
+    void showTemporaryCenterText(const String& message, unsigned long durationMs = 1500UL);
     void markActivity();
     void powerOff();
     void loop(const AppStateSnapshot& state);
@@ -25,8 +26,10 @@ class DisplayManager {
     String bootMessage_ = "Booting";
     unsigned long lastDrawAt_ = 0;
     unsigned long lastActivityAt_ = 0;
+    unsigned long temporaryCenterTextUntilMs_ = 0;
     uint16_t scrollOffset_ = 0;
     String lastSignature_;
+    String temporaryCenterText_;
 
     bool isEnabled() const;
     Adafruit_GFX* gfx();

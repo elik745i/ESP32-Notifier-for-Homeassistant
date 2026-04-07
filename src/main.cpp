@@ -429,6 +429,61 @@ String buttonActionFor(const PhysicalButtonState& button) {
         : normalizedButtonAction(settings->device.button2Action, DefaultConfig::BUTTON2_DEFAULT_ACTION);
 }
 
+String buttonActionDisplayLabel(const String& action) {
+    if (action == "none") {
+        return "Disabled";
+    }
+    if (action == "previous") {
+        return "Previous";
+    }
+    if (action == "next") {
+        return "Next";
+    }
+    if (action == "play_pause") {
+        return "Play/Pause";
+    }
+    if (action == "replay_current") {
+        return "Replay";
+    }
+    if (action == "stop") {
+        return "Stop";
+    }
+    if (action == "volume_up") {
+        return "Volume +";
+    }
+    if (action == "volume_down") {
+        return "Volume -";
+    }
+    if (action == "ha_previous") {
+        return "HA Prev";
+    }
+    if (action == "ha_next") {
+        return "HA Next";
+    }
+    return action;
+}
+
+String buttonOverlayText(const String& action) {
+    if ((action == "volume_up" || action == "volume_down") && settings != nullptr) {
+        String label = "Volume ";
+        label += settings->device.savedVolumePercent;
+        label += "%";
+        return label;
+    }
+
+    return buttonActionDisplayLabel(action);
+}
+
+void showS3ButtonActionOnDisplay(const String& action) {
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+    if (displayManager != nullptr) {
+        displayManager->showTemporaryCenterText(buttonOverlayText(action));
+    }
+#else
+    (void)action;
+#endif
+}
+
 void initializeButtons() {
     pinMode(button1.pin, INPUT);
     pinMode(button2.pin, INPUT);
@@ -636,6 +691,9 @@ void pollPhysicalButton(PhysicalButtonState& button) {
 
     const String action = buttonActionFor(button);
     const bool handled = executeButtonAction(button, action);
+    if (handled || action == "none") {
+        showS3ButtonActionOnDisplay(action);
+    }
     Serial.printf("[input] %s on GPIO%u action=%s handled=%s\n",
                   button.label,
                   static_cast<unsigned>(button.pin),
