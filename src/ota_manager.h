@@ -12,14 +12,19 @@ class OtaManager {
     void begin(const SettingsBundle& settings, AppState& appState);
     void applySettings(const SettingsBundle& settings);
     void setProgressCallback(void (*callback)());
+    void setRollbackState(bool pendingVerify, const String& pendingVersion, const String& rolledBackVersion, const String& rollbackReason);
     void loop();
     bool triggerCheck(bool applyAfterCheck);
+    bool triggerReleaseRefresh(String& error);
     bool beginLocalUpload(const String& filename, size_t totalSize, String& error);
     bool writeLocalUploadChunk(const uint8_t* data, size_t len, String& error);
     bool finishLocalUpload(String& error);
     void abortLocalUpload(const String& error);
     void appendStatusJson(JsonObject root) const;
     void appendFirmwareInfoJson(JsonObject root, bool refresh, String& error);
+    void reportError(const String& error);
+    bool selectReleaseOption(const String& optionLabel, String& error);
+    bool triggerInstallSelected(String& error);
     bool triggerInstallVersion(const String& version, String& error);
     bool triggerInstallVersion(const String& version, const String& assetName, String& error);
 
@@ -55,6 +60,7 @@ class OtaManager {
     volatile bool pendingReleaseRefresh_ = false;
     String pendingInstallVersion_;
     String pendingInstallAssetName_;
+    String pendingInstallAssetUrl_;
     uint8_t releaseRefreshAttemptsRemaining_ = 0;
     uint8_t releaseRefreshAttemptsStarted_ = 0;
     unsigned long releaseRefreshNextAttemptAtMs_ = 0;
@@ -64,6 +70,10 @@ class OtaManager {
     String lastMessage_ = "idle";
     String latestVersion_;
     bool updateAvailable_ = false;
+    bool rollbackPendingVerify_ = false;
+    String rollbackPendingVersion_;
+    String rolledBackVersion_;
+    String rollbackReason_;
     String selectedVersion_;
     String selectedAssetName_;
     String updatePhase_;
@@ -84,7 +94,7 @@ class OtaManager {
 
     void runTask(bool applyAfterCheck);
     void runReleaseRefreshTask();
-    void runVersionTask(const String& version, const String& assetName);
+    void runVersionTask(const String& version, const String& assetName, const String& assetUrl);
     CheckResult checkNow();
     bool fetchAvailableReleases(bool refresh, String& error);
     bool resolveVersionResult(const String& version, const String& assetName, CheckResult& result, String& error);
@@ -96,4 +106,7 @@ class OtaManager {
     void scheduleReboot(unsigned long delayMs);
     void syncAppState(const String& lastResult, const String& lastError = "");
     void pumpProgressCallback();
+    String releaseOptionLabel(const ReleaseInfo& release) const;
+    const ReleaseInfo* findReleaseForOption(const String& optionLabel) const;
+    void ensureSelectedReleaseStillValid();
 };

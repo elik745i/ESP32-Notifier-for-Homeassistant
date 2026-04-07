@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <vector>
 
 #include "settings_schema.h"
 
@@ -34,6 +35,7 @@ String discoveryPayloadSensor(const SettingsBundle& settings, const char* object
 String discoveryPayloadNumber(const SettingsBundle& settings, const char* objectId, const char* name, const char* stateTopic, const char* commandTopic, int minValue, int maxValue, int step, const char* unit, const char* icon = nullptr, const String& configurationUrl = String());
 String discoveryPayloadButton(const SettingsBundle& settings, const char* objectId, const char* name, const char* commandTopic, const char* payloadPress, const char* icon = nullptr, const String& configurationUrl = String());
 String discoveryPayloadText(const SettingsBundle& settings, const char* objectId, const char* name, const char* commandTopic, const char* icon = nullptr, const char* stateTopic = nullptr, const char* valueTemplate = nullptr, const String& configurationUrl = String());
+String discoveryPayloadSelect(const SettingsBundle& settings, const char* objectId, const char* name, const char* stateTopic, const char* commandTopic, const std::vector<String>& options, const char* icon = nullptr, const char* valueTemplate = nullptr, const String& configurationUrl = String());
 #ifdef APP_ENABLE_HACS_MQTT
 String discoveryPayloadHacsMediaPlayer(const SettingsBundle& settings);
 #endif

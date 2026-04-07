@@ -1,4 +1,6 @@
 #include <Arduino.h>
+#include <Preferences.h>
+#include <esp_ota_ops.h>
 #include <esp_sleep.h>
 #include <esp_system.h>
 
@@ -197,6 +199,12 @@ bool previousMqttConnected = false;
 String previousPlaybackState = "idle";
 String lastPublishedOtaSignature;
 bool transitionStateInitialized = false;
+bool otaPendingVerification = false;
+bool otaHealthConfirmed = false;
+unsigned long otaBootStartedAt = 0;
+String otaPendingVersion;
+String lastRolledBackVersion;
+String lastRollbackReason;
 
 constexpr float kBatteryPercentEmptyVoltage = 3.2f;
 constexpr float kBatteryPercentFullVoltage = 4.2f;
@@ -204,6 +212,13 @@ constexpr unsigned long kLowBatteryWakeWindowMs = 30000UL;
 constexpr unsigned long kVolumePersistDelayMs = 750UL;
 constexpr unsigned long kButtonDebounceMs = 30UL;
 constexpr size_t kPlaybackHistoryLimit = 12;
+constexpr unsigned long kOtaHealthConfirmDelayMs = 8000UL;
+
+constexpr char kOtaRollbackNamespace[] = "ota_state";
+constexpr char kOtaPendingVersionKey[] = "pend_ver";
+constexpr char kOtaPendingReasonKey[] = "pend_reason";
+constexpr char kOtaLastBadVersionKey[] = "bad_ver";
+constexpr char kOtaLastBadReasonKey[] = "bad_reason";
 
 bool playRequest(const String& url, const String& label, const String& type, const String& source, String& error, bool addToHistory);
 
@@ -248,6 +263,133 @@ const char* resetReasonToString(esp_reset_reason_t reason) {
             return "sdio";
         default:
             return "unhandled";
+    }
+}
+
+String normalizedAppVersion() {
+    return String("v") + APP_VERSION;
+}
+
+void storeRollbackPendingInfo(const String& version, const String& reason) {
+    Preferences prefs;
+    if (!prefs.begin(kOtaRollbackNamespace, false)) {
+        return;
+    }
+    prefs.putString(kOtaPendingVersionKey, version);
+    prefs.putString(kOtaPendingReasonKey, reason);
+    prefs.end();
+}
+
+void clearRollbackPendingInfo() {
+    Preferences prefs;
+    if (!prefs.begin(kOtaRollbackNamespace, false)) {
+        return;
+    }
+    prefs.remove(kOtaPendingVersionKey);
+    prefs.remove(kOtaPendingReasonKey);
+    prefs.end();
+}
+
+void persistRollbackOutcome(const String& version, const String& reason) {
+    Preferences prefs;
+    if (!prefs.begin(kOtaRollbackNamespace, false)) {
+        return;
+    }
+    prefs.putString(kOtaLastBadVersionKey, version);
+    prefs.putString(kOtaLastBadReasonKey, reason);
+    prefs.end();
+}
+
+void loadRollbackState() {
+    Preferences prefs;
+    if (!prefs.begin(kOtaRollbackNamespace, false)) {
+        return;
+    }
+
+    otaPendingVersion = prefs.getString(kOtaPendingVersionKey, "");
+    String pendingReason = prefs.getString(kOtaPendingReasonKey, "");
+    lastRolledBackVersion = prefs.getString(kOtaLastBadVersionKey, "");
+    lastRollbackReason = prefs.getString(kOtaLastBadReasonKey, "");
+
+    const String currentVersion = normalizedAppVersion();
+    const esp_partition_t* runningPartition = esp_ota_get_running_partition();
+    esp_ota_img_states_t otaState = ESP_OTA_IMG_UNDEFINED;
+    if (runningPartition != nullptr && esp_ota_get_state_partition(runningPartition, &otaState) == ESP_OK && otaState == ESP_OTA_IMG_PENDING_VERIFY) {
+        otaPendingVerification = true;
+        otaBootStartedAt = millis();
+        otaHealthConfirmed = false;
+        otaPendingVersion = currentVersion;
+        if (pendingReason.isEmpty()) {
+            pendingReason = "App booted but did not finish health confirmation.";
+        }
+        prefs.putString(kOtaPendingVersionKey, otaPendingVersion);
+        prefs.putString(kOtaPendingReasonKey, pendingReason);
+    } else {
+        otaPendingVerification = false;
+        otaHealthConfirmed = true;
+        if (!otaPendingVersion.isEmpty() && otaPendingVersion != currentVersion) {
+            lastRolledBackVersion = otaPendingVersion;
+            if (pendingReason.isEmpty()) {
+                pendingReason = "New firmware rebooted before health confirmation; bootloader rolled back.";
+            }
+            lastRollbackReason = pendingReason;
+            prefs.putString(kOtaLastBadVersionKey, lastRolledBackVersion);
+            prefs.putString(kOtaLastBadReasonKey, lastRollbackReason);
+        }
+        prefs.remove(kOtaPendingVersionKey);
+        prefs.remove(kOtaPendingReasonKey);
+        otaPendingVersion = "";
+    }
+
+    prefs.end();
+}
+
+void refreshRollbackStateInOtaManager() {
+    if (otaManager == nullptr) {
+        return;
+    }
+    otaManager->setRollbackState(otaPendingVerification && !otaHealthConfirmed, otaPendingVersion, lastRolledBackVersion, lastRollbackReason);
+}
+
+[[noreturn]] void rollbackAndReboot(const String& reason) {
+    const String version = otaPendingVersion.isEmpty() ? normalizedAppVersion() : otaPendingVersion;
+    storeRollbackPendingInfo(version, reason);
+    persistRollbackOutcome(version, reason);
+    Serial.printf("[rollback] %s\n", reason.c_str());
+    Serial.flush();
+    const esp_err_t result = esp_ota_mark_app_invalid_rollback_and_reboot();
+    Serial.printf("[rollback] esp_ota_mark_app_invalid_rollback_and_reboot failed: %d\n", static_cast<int>(result));
+    Serial.flush();
+    delay(1000);
+    ESP.restart();
+    for (;;) {
+        delay(1000);
+    }
+}
+
+void confirmOtaHealthIfReady() {
+    if (!otaPendingVerification || otaHealthConfirmed) {
+        return;
+    }
+    if ((millis() - otaBootStartedAt) < kOtaHealthConfirmDelayMs) {
+        return;
+    }
+    if (rebootRequested || factoryResetRequested || recoveryRebootScheduled) {
+        return;
+    }
+
+    const esp_err_t result = esp_ota_mark_app_valid_cancel_rollback();
+    if (result == ESP_OK) {
+        otaHealthConfirmed = true;
+        otaPendingVerification = false;
+        otaPendingVersion = "";
+        clearRollbackPendingInfo();
+        refreshRollbackStateInOtaManager();
+        Serial.println("[rollback] OTA firmware marked healthy");
+        Serial.flush();
+    } else {
+        Serial.printf("[rollback] failed to confirm OTA app: %d\n", static_cast<int>(result));
+        Serial.flush();
     }
 }
 
@@ -573,11 +715,34 @@ void handleLowBatterySleepPolicy(const AppStateSnapshot& snapshot) {
     enterLowBatteryDeepSleep(batteryPercent, snapshot.battery.voltage, "battery threshold reached");
 }
 
+void publishOtaStateIfNeeded(const AppStateSnapshot& snapshot) {
+    if (mqttManager == nullptr || !mqttManager->isConnected()) {
+        return;
+    }
+
+    const String otaSignature = String(snapshot.ota.busy ? '1' : '0') + "|" + snapshot.ota.latestVersion + "|" +
+        snapshot.ota.lastResult + "|" + snapshot.ota.lastError + "|" + snapshot.ota.phase + "|" + snapshot.ota.progressPercent;
+    if (otaSignature == lastPublishedOtaSignature) {
+        return;
+    }
+
+    const unsigned long now = millis();
+    if ((now - lastOtaMqttPublishAt) < 500UL && snapshot.ota.busy) {
+        return;
+    }
+
+    lastPublishedOtaSignature = otaSignature;
+    lastOtaMqttPublishAt = now;
+    mqttManager->publishState();
+}
+
 void pumpOtaDisplayProgress() {
     if (appState == nullptr || displayManager == nullptr) {
         return;
     }
-    displayManager->loop(appState->snapshot());
+    const AppStateSnapshot snapshot = appState->snapshot();
+    displayManager->loop(snapshot);
+    publishOtaStateIfNeeded(snapshot);
 }
 
 bool initializeRuntimeObjects() {
@@ -670,23 +835,58 @@ bool playRequest(const String& url, const String& label, const String& type, con
 
 void handleMqttCommand(const PlaybackCommand& command) {
     if (command.action == "ota_check") {
-        if (otaManager != nullptr && otaManager->triggerCheck(false)) {
+        String error;
+        if (otaManager != nullptr && otaManager->triggerReleaseRefresh(error)) {
             appState->setLastError("");
         } else {
-            appState->setLastError("OTA check request was rejected.");
+            const String message = error.isEmpty() ? String("OTA release refresh request was rejected.") : error;
+            if (otaManager != nullptr) {
+                otaManager->reportError(message);
+            }
+            appState->setLastError(message);
+        }
+    } else if (command.action == "ota_select_version") {
+        String error;
+        if (otaManager != nullptr && otaManager->selectReleaseOption(command.label, error)) {
+            appState->setLastError("");
+        } else {
+            const String message = error.isEmpty() ? String("OTA firmware selection was rejected.") : error;
+            if (otaManager != nullptr) {
+                otaManager->reportError(message);
+            }
+            appState->setLastError(message);
         }
     } else if (command.action == "ota_install_latest") {
         if (otaManager != nullptr && otaManager->triggerCheck(true)) {
             appState->setLastError("");
         } else {
-            appState->setLastError("OTA install request was rejected.");
+            const String message = "OTA install request was rejected.";
+            if (otaManager != nullptr) {
+                otaManager->reportError(message);
+            }
+            appState->setLastError(message);
+        }
+    } else if (command.action == "ota_install_selected") {
+        String error;
+        if (otaManager != nullptr && otaManager->triggerInstallSelected(error)) {
+            appState->setLastError("");
+        } else {
+            const String message = error.isEmpty() ? String("OTA install request was rejected.") : error;
+            if (otaManager != nullptr) {
+                otaManager->reportError(message);
+            }
+            appState->setLastError(message);
         }
     } else if (command.action == "ota_install") {
         String error;
         if (otaManager != nullptr && otaManager->triggerInstallVersion(command.version, command.assetName, error)) {
             appState->setLastError("");
         } else {
-            appState->setLastError(error.isEmpty() ? String("OTA install request was rejected.") : error);
+            const String message = error.isEmpty() ? String("OTA install request was rejected.") : error;
+            if (otaManager != nullptr) {
+                otaManager->reportError(message);
+            }
+            appState->setLastError(message);
         }
     } else if (command.action == "stop" || command.action == "pause") {
         audioPlayer->stop();
@@ -782,14 +982,24 @@ void setup() {
     delay(200);
 
     const esp_reset_reason_t resetReason = esp_reset_reason();
+    loadRollbackState();
     wokeFromDeepSleep = resetReason == ESP_RST_DEEPSLEEP;
     Serial.printf("\n[boot] app=%s version=%s built=%s\n", APP_NAME, APP_VERSION, APP_BUILD_DATE);
     Serial.printf("[boot] reset reason=%s (%d)\n", resetReasonToString(resetReason), static_cast<int>(resetReason));
+    if (!lastRolledBackVersion.isEmpty()) {
+        Serial.printf("[rollback] previous OTA rollback detected: version=%s reason=%s\n", lastRolledBackVersion.c_str(), lastRollbackReason.c_str());
+    }
+    if (otaPendingVerification) {
+        Serial.printf("[rollback] running pending-verify image %s\n", otaPendingVersion.c_str());
+    }
     Serial.flush();
 
     if (!initializeRuntimeObjects()) {
         Serial.println("[boot] failed to construct runtime objects");
         Serial.flush();
+        if (otaPendingVerification) {
+            rollbackAndReboot("Runtime objects failed to initialize during OTA health check.");
+        }
         delay(1000);
         ESP.restart();
     }
@@ -820,6 +1030,7 @@ void setup() {
 
     soundEffects->begin(*settings);
     otaManager->begin(*settings, *appState);
+    refreshRollbackStateInOtaManager();
     otaManager->setProgressCallback(pumpOtaDisplayProgress);
 
     mqttManager->begin(*settings, *appState, *wifiManager, *otaManager, handleMqttCommand);
@@ -909,17 +1120,9 @@ void loop() {
     processSoundEffectTransitions(snapshot);
     displayManager->loop(snapshot);
     handleLowBatterySleepPolicy(snapshot);
+    confirmOtaHealthIfReady();
 
-    const String otaSignature = String(snapshot.ota.busy ? '1' : '0') + "|" + snapshot.ota.latestVersion + "|" +
-        snapshot.ota.lastResult + "|" + snapshot.ota.lastError + "|" + snapshot.ota.phase + "|" + snapshot.ota.progressPercent;
-    if (mqttManager->isConnected() && otaSignature != lastPublishedOtaSignature) {
-        const unsigned long now = millis();
-        if ((now - lastOtaMqttPublishAt) >= 500UL || !snapshot.ota.busy) {
-            lastPublishedOtaSignature = otaSignature;
-            lastOtaMqttPublishAt = now;
-            mqttManager->publishState();
-        }
-    }
+    publishOtaStateIfNeeded(snapshot);
 
     if (millis() - lastHeapUpdateAt > 5000UL) {
         lastHeapUpdateAt = millis();

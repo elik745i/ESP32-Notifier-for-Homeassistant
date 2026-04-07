@@ -6,6 +6,46 @@ namespace {
 constexpr char PREF_NAMESPACE[] = "notifier";
 constexpr char PREF_MARKER[] = "saved";
 
+String defaultDeviceBaseName() {
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+    return "esp32s3-notifier";
+#else
+    return DefaultConfig::DEVICE_NAME;
+#endif
+}
+
+String defaultFriendlyBaseName() {
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+    return "ESP32-S3 Notifier";
+#else
+    return DefaultConfig::FRIENDLY_NAME;
+#endif
+}
+
+String defaultOtaAssetTemplate() {
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+    #ifdef APP_ENABLE_HACS_MQTT
+    #ifdef APP_DISABLE_WEB_UI
+        return "esp32s3-notifier-hacs-slim-${version}.bin";
+    #else
+        return "esp32s3-notifier-hacs-${version}.bin";
+    #endif
+    #else
+        return "esp32s3-notifier-${version}.bin";
+    #endif
+#else
+    #ifdef APP_ENABLE_HACS_MQTT
+        #ifdef APP_DISABLE_WEB_UI
+        return "esp32-notifier-hacs-slim-${version}.bin";
+        #else
+        return "esp32-notifier-hacs-${version}.bin";
+        #endif
+    #else
+        return DefaultConfig::OTA_ASSET_TEMPLATE;
+    #endif
+#endif
+}
+
 template <typename T>
 T clampValue(T value, T low, T high) {
     if (value < low) {
@@ -31,24 +71,36 @@ String hardwareIdSuffix(bool uppercase = false) {
 }
 
 String defaultDeviceName() {
-    return String(DefaultConfig::DEVICE_NAME) + "-" + hardwareIdSuffix(false);
+    return defaultDeviceBaseName() + "-" + hardwareIdSuffix(false);
 }
 
 String defaultFriendlyName() {
-    return String(DefaultConfig::FRIENDLY_NAME) + " " + hardwareIdSuffix(true);
+    return defaultFriendlyBaseName() + " " + hardwareIdSuffix(true);
+}
+
+bool matchesAnyNormalized(const String& value, std::initializer_list<const char*> patterns) {
+    for (const char* pattern : patterns) {
+        if (value == String(pattern)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool isLegacyDefaultDeviceName(const String& value) {
     String normalized = value;
     normalized.trim();
     normalized.toLowerCase();
-    return normalized == String(DefaultConfig::DEVICE_NAME);
+    return normalized == defaultDeviceBaseName() ||
+        matchesAnyNormalized(normalized, {"esp32-notifier", "esp32s3-notifier"});
 }
 
 bool isLegacyDefaultFriendlyName(const String& value) {
     String normalized = value;
     normalized.trim();
-    return normalized == String(DefaultConfig::FRIENDLY_NAME) || isLegacyDefaultDeviceName(normalized);
+    return normalized == defaultFriendlyBaseName() ||
+        matchesAnyNormalized(normalized, {"ESP32 Notifier", "ESP32-S3 Notifier"}) ||
+        isLegacyDefaultDeviceName(normalized);
 }
 
 String normalizeButtonAction(String value, const char* fallback) {
@@ -92,7 +144,7 @@ SettingsBundle SettingsManager::defaults() const {
     settings.ota.owner = DefaultConfig::OTA_OWNER;
     settings.ota.repository = DefaultConfig::OTA_REPOSITORY;
     settings.ota.channel = DefaultConfig::OTA_CHANNEL;
-    settings.ota.assetTemplate = DefaultConfig::OTA_ASSET_TEMPLATE;
+    settings.ota.assetTemplate = defaultOtaAssetTemplate();
     settings.ota.manifestUrl = DefaultConfig::OTA_MANIFEST_URL;
     settings.ota.allowInsecureTls = DefaultConfig::OTA_ALLOW_INSECURE_TLS;
 
@@ -153,6 +205,12 @@ SettingsBundle SettingsManager::sanitize(const SettingsBundle& input) const {
     }
     if (settings.mqtt.baseTopic.isEmpty()) {
         settings.mqtt.baseTopic = DefaultConfig::MQTT_BASE_TOPIC;
+    }
+    if (settings.ota.assetTemplate.isEmpty() || settings.ota.assetTemplate == DefaultConfig::OTA_ASSET_TEMPLATE ||
+        settings.ota.assetTemplate == "esp32-notifier-hacs-${version}.bin" || settings.ota.assetTemplate == "esp32-notifier-hacs-slim-${version}.bin" ||
+        settings.ota.assetTemplate == "esp32s3-notifier-${version}.bin" || settings.ota.assetTemplate == "esp32s3-notifier-hacs-${version}.bin" ||
+        settings.ota.assetTemplate == "esp32s3-notifier-hacs-slim-${version}.bin") {
+        settings.ota.assetTemplate = defaultOtaAssetTemplate();
     }
     if (settings.mqtt.port == 0) {
         settings.mqtt.port = DefaultConfig::MQTT_PORT;

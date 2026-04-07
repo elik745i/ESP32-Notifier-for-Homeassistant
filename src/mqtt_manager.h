@@ -47,6 +47,7 @@ class MqttManager {
     bool statePublishPending_ = false;
     bool discoveryPublishedForSession_ = false;
     bool wifiWasConnected_ = false;
+    String lastOtaDiscoverySignature_;
     uint8_t consecutiveFailureCount_ = 0;
     unsigned long lastConnectAttemptAt_ = 0;
     unsigned long lastStatePublishAt_ = 0;

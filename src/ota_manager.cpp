@@ -40,17 +40,49 @@ String normalizedVersionTag(String value) {
     return "v" + value;
 }
 
+String defaultAssetTemplateForBuild() {
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+    #ifdef APP_ENABLE_HACS_MQTT
+    #ifdef APP_DISABLE_WEB_UI
+        return "esp32s3-notifier-hacs-slim-${version}.bin";
+    #else
+        return "esp32s3-notifier-hacs-${version}.bin";
+    #endif
+    #else
+        return "esp32s3-notifier-${version}.bin";
+    #endif
+#else
+    #ifdef APP_ENABLE_HACS_MQTT
+        #ifdef APP_DISABLE_WEB_UI
+        return "esp32-notifier-hacs-slim-${version}.bin";
+        #else
+        return "esp32-notifier-hacs-${version}.bin";
+        #endif
+    #else
+        return "esp32-notifier-${version}.bin";
+    #endif
+#endif
+}
+
+String effectiveAssetTemplate(const SettingsBundle& settings) {
+        String templ = settings.ota.assetTemplate;
+        templ.trim();
+        if (templ.isEmpty()) {
+                return defaultAssetTemplateForBuild();
+        }
+
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+    if (templ == "esp32-notifier-${version}.bin" || templ == "esp32-notifier-hacs-${version}.bin" || templ == "esp32-notifier-hacs-slim-${version}.bin") {
+                return defaultAssetTemplateForBuild();
+        }
+#endif
+
+        return templ;
+}
+
 String currentReleaseAssetName(const SettingsBundle& settings) {
     const String version = normalizedVersionTag(APP_VERSION);
-#ifdef APP_ENABLE_HACS_MQTT
-  #ifdef APP_DISABLE_WEB_UI
-    return applyVersionTemplate("esp32-notifier-hacs-slim-${version}.bin", version);
-  #else
-    return applyVersionTemplate("esp32-notifier-hacs-${version}.bin", version);
-  #endif
-#else
-    return applyVersionTemplate(settings.ota.assetTemplate, version);
-#endif
+        return applyVersionTemplate(effectiveAssetTemplate(settings), version);
 }
 
 String variantLabelForAssetName(const String& assetName) {
@@ -285,12 +317,54 @@ void OtaManager::begin(const SettingsBundle& settings, AppState& appState) {
     applySettings(settings);
 }
 
+void OtaManager::setRollbackState(bool pendingVerify, const String& pendingVersion, const String& rolledBackVersion, const String& rollbackReason) {
+    rollbackPendingVerify_ = pendingVerify;
+    rollbackPendingVersion_ = pendingVersion;
+    rolledBackVersion_ = rolledBackVersion;
+    rollbackReason_ = rollbackReason;
+
+    if (!rollbackReason_.isEmpty()) {
+        lastMessage_ = rollbackReason_;
+        syncAppState("rolled_back", rollbackReason_);
+    } else if (rollbackPendingVerify_) {
+        syncAppState("pending_verify");
+    }
+}
+
 void OtaManager::setProgressCallback(void (*callback)()) {
     progressCallback_ = callback;
 }
 
 void OtaManager::applySettings(const SettingsBundle& settings) {
     settings_ = settings;
+}
+
+bool OtaManager::triggerReleaseRefresh(String& error) {
+    if (busy_) {
+        error = "Another update is already in progress.";
+        return false;
+    }
+    if (pendingReleaseRefresh_ || releaseRefreshInProgress_) {
+        error = "Firmware release refresh is already running.";
+        return false;
+    }
+
+    pendingReleaseRefresh_ = true;
+    releaseRefreshAttemptsRemaining_ = RELEASE_REFRESH_MAX_ATTEMPTS;
+    releaseRefreshAttemptsStarted_ = 0;
+    releaseRefreshNextAttemptAtMs_ = millis();
+    releaseRefreshError_ = "";
+    lastMessage_ = "queued release refresh";
+    syncAppState("queued");
+    return true;
+}
+
+void OtaManager::reportError(const String& error) {
+    if (error.isEmpty()) {
+        return;
+    }
+    lastMessage_ = error;
+    syncAppState("error", error);
 }
 
 void OtaManager::loop() {
@@ -306,9 +380,11 @@ void OtaManager::loop() {
     if (!pendingInstallVersion_.isEmpty() && !busy_) {
         const String version = pendingInstallVersion_;
         const String assetName = pendingInstallAssetName_;
+        const String assetUrl = pendingInstallAssetUrl_;
         pendingInstallVersion_ = "";
         pendingInstallAssetName_ = "";
-        runVersionTask(version, assetName);
+        pendingInstallAssetUrl_ = "";
+        runVersionTask(version, assetName, assetUrl);
         return;
     }
     if (pendingCheck_ && !busy_) {
@@ -325,6 +401,7 @@ bool OtaManager::triggerCheck(bool applyAfterCheck) {
     }
     pendingCheck_ = true;
     pendingApply_ = applyAfterCheck;
+    pendingInstallAssetUrl_ = "";
     selectedVersion_ = "";
     selectedAssetName_ = "";
     resetProgress();
@@ -496,6 +573,49 @@ void OtaManager::appendStatusJson(JsonObject root) const {
     root["updateTotalBytes"] = progressTotalBytes_;
 }
 
+String OtaManager::releaseOptionLabel(const ReleaseInfo& release) const {
+    String label = release.tag;
+    if (!release.variantLabel.isEmpty()) {
+        label += " - ";
+        label += release.variantLabel;
+    }
+    if (release.prerelease) {
+        label += " (pre)";
+    }
+    return label;
+}
+
+const OtaManager::ReleaseInfo* OtaManager::findReleaseForOption(const String& optionLabel) const {
+    for (const ReleaseInfo& release : releaseCache_) {
+        if (releaseOptionLabel(release) == optionLabel) {
+            return &release;
+        }
+    }
+    return nullptr;
+}
+
+void OtaManager::ensureSelectedReleaseStillValid() {
+    for (const ReleaseInfo& release : releaseCache_) {
+        if (release.tag == selectedVersion_ && release.assetName == selectedAssetName_) {
+            return;
+        }
+    }
+
+    selectedVersion_ = "";
+    selectedAssetName_ = "";
+    for (const ReleaseInfo& release : releaseCache_) {
+        if (release.isLatest) {
+            selectedVersion_ = release.tag;
+            selectedAssetName_ = release.assetName;
+            return;
+        }
+    }
+    if (!releaseCache_.empty()) {
+        selectedVersion_ = releaseCache_.front().tag;
+        selectedAssetName_ = releaseCache_.front().assetName;
+    }
+}
+
 void OtaManager::appendFirmwareInfoJson(JsonObject root, bool refresh, String& error) {
     root["currentVersion"] = normalizeVersion(APP_VERSION);
     root["currentChip"] = currentChipFamily();
@@ -504,6 +624,7 @@ void OtaManager::appendFirmwareInfoJson(JsonObject root, bool refresh, String& e
     root["updateStatus"] = lastMessage_;
     root["selectedVersion"] = selectedVersion_;
     root["selectedAssetName"] = selectedAssetName_;
+    root["selectedOption"] = "";
     root["updatePhase"] = updatePhase_;
     root["updateProgress"] = progressPercent_;
     root["updateBytes"] = progressBytes_;
@@ -512,6 +633,10 @@ void OtaManager::appendFirmwareInfoJson(JsonObject root, bool refresh, String& e
     root["releaseRefreshInProgress"] = releaseRefreshInProgress_;
     root["releaseRefreshAttemptsRemaining"] = releaseRefreshAttemptsRemaining_;
     root["releaseRefreshAttemptsStarted"] = releaseRefreshAttemptsStarted_;
+    root["rollbackPendingVerify"] = rollbackPendingVerify_;
+    root["rollbackPendingVersion"] = rollbackPendingVersion_;
+    root["rolledBackVersion"] = rolledBackVersion_;
+    root["rollbackReason"] = rollbackReason_;
 
     if (refresh) {
         if (busy_) {
@@ -538,19 +663,26 @@ void OtaManager::appendFirmwareInfoJson(JsonObject root, bool refresh, String& e
         std::vector<String> latestAssets;
         const String latestTag = latestVersion_.isEmpty() ? releaseCache_.front().tag : latestVersion_;
         JsonArray releases = root["releases"].to<JsonArray>();
+        JsonArray releaseOptions = root["releaseOptions"].to<JsonArray>();
         for (const ReleaseInfo& release : releaseCache_) {
             JsonObject item = releases.add<JsonObject>();
+            const String optionLabel = releaseOptionLabel(release);
             item["tag"] = release.tag;
             item["name"] = release.name;
             item["publishedAt"] = release.publishedAt;
             item["assetUrl"] = release.assetUrl;
             item["assetName"] = release.assetName;
+            item["optionLabel"] = optionLabel;
             item["variantLabel"] = release.variantLabel;
             item["chipFamily"] = release.chipFamily;
             item["prerelease"] = release.prerelease;
             item["isInstalled"] = release.isInstalled;
             item["isLatest"] = release.isLatest;
             item["isNew"] = release.isNew;
+            releaseOptions.add(optionLabel);
+            if (release.tag == selectedVersion_ && release.assetName == selectedAssetName_) {
+                root["selectedOption"] = optionLabel;
+            }
 
             bool seenVersion = false;
             for (const String& version : uniqueVersions) {
@@ -594,6 +726,45 @@ void OtaManager::appendFirmwareInfoJson(JsonObject root, bool refresh, String& e
     }
 }
 
+bool OtaManager::selectReleaseOption(const String& optionLabel, String& error) {
+    if (busy_) {
+        error = "Another update is already in progress.";
+        return false;
+    }
+    if (optionLabel.isEmpty()) {
+        error = "Select a firmware release first.";
+        return false;
+    }
+    if (!fetchAvailableReleases(false, error)) {
+        return false;
+    }
+
+    const ReleaseInfo* release = findReleaseForOption(optionLabel);
+    if (release == nullptr) {
+        error = "Selected firmware option is not available. Run Check Firmware Releases again.";
+        return false;
+    }
+
+    selectedVersion_ = release->tag;
+    selectedAssetName_ = release->assetName;
+    resetProgress();
+    lastMessage_ = String("selected ") + release->assetName;
+    syncAppState("selected");
+    return true;
+}
+
+bool OtaManager::triggerInstallSelected(String& error) {
+    if (busy_) {
+        error = "Another update is already in progress.";
+        return false;
+    }
+    if (selectedVersion_.isEmpty()) {
+        error = "Select a firmware release first.";
+        return false;
+    }
+    return triggerInstallVersion(selectedVersion_, selectedAssetName_, error);
+}
+
 bool OtaManager::triggerInstallVersion(const String& version, String& error) {
     if (busy_) {
         error = "Another update is already in progress.";
@@ -608,6 +779,7 @@ bool OtaManager::triggerInstallVersion(const String& version, String& error) {
     const String normalizedVersion = normalizeVersion(version);
     pendingInstallVersion_ = normalizedVersion;
     pendingInstallAssetName_ = "";
+    pendingInstallAssetUrl_ = "";
     selectedVersion_ = normalizedVersion;
     selectedAssetName_ = "";
     resetProgress();
@@ -638,6 +810,7 @@ bool OtaManager::triggerInstallVersion(const String& version, const String& asse
     const String normalizedVersion = normalizeVersion(version);
     pendingInstallVersion_ = normalizedVersion;
     pendingInstallAssetName_ = assetName;
+    pendingInstallAssetUrl_ = githubReleaseAssetUrl(settings_, normalizedVersion, assetName);
     selectedVersion_ = normalizedVersion;
     selectedAssetName_ = assetName;
     resetProgress();
@@ -722,22 +895,32 @@ void OtaManager::runTask(bool applyAfterCheck) {
     scheduleReboot(1500);
 }
 
-void OtaManager::runVersionTask(const String& version, const String& assetName) {
+void OtaManager::runVersionTask(const String& version, const String& assetName, const String& assetUrl) {
     busy_ = true;
     selectedVersion_ = version;
     selectedAssetName_ = assetName;
     resetProgress();
-    updatePhase_ = "Checking";
-    lastMessage_ = assetName.isEmpty() ? String("checking ") + version : String("checking ") + assetName;
+    updatePhase_ = "Resolving release";
+    lastMessage_ = assetName.isEmpty() ? String("Resolving firmware ") + version : String("Resolving firmware ") + assetName;
     syncAppState("checking");
 
     CheckResult result;
     String error;
-    if (!resolveVersionResult(version, assetName, result, error)) {
-        lastMessage_ = error;
-        syncAppState("error", error);
-        busy_ = false;
-        return;
+    if (!assetUrl.isEmpty()) {
+        result.success = true;
+        result.latestVersion = version;
+        result.assetName = assetName;
+        result.assetUrl = assetUrl;
+        result.checksumSha256 = "";
+        result.updateAvailable = compareVersions(normalizeVersion(APP_VERSION), version) < 0;
+        result.message = result.updateAvailable ? "update available" : "selected release ready";
+    } else {
+        if (!resolveVersionResult(version, assetName, result, error)) {
+            lastMessage_ = error;
+            syncAppState("error", error);
+            busy_ = false;
+            return;
+        }
     }
 
     latestVersion_ = releaseCache_.empty() ? version : latestVersion_;
@@ -907,7 +1090,7 @@ bool OtaManager::fetchAvailableReleases(bool refresh, String& error) {
             item.name = releaseName;
             item.publishedAt = publishedAt;
             item.prerelease = prerelease;
-            item.assetName = applyVersionTemplate(settings_.ota.assetTemplate, releaseTag);
+            item.assetName = applyVersionTemplate(effectiveAssetTemplate(settings_), releaseTag);
             item.assetUrl = githubReleaseAssetUrl(settings_, releaseTag, item.assetName);
             item.variantLabel = variantLabelForAssetName(item.assetName);
             item.chipFamily = chipFamilyForAssetName(item.assetName);
@@ -928,6 +1111,7 @@ bool OtaManager::fetchAvailableReleases(bool refresh, String& error) {
         latestVersion_ = releaseCache_.front().tag;
         releaseCache_.front().isLatest = true;
     }
+    ensureSelectedReleaseStillValid();
     releasesFetchedAtMs_ = millis();
     return true;
 }
@@ -1094,30 +1278,41 @@ OtaManager::CheckResult OtaManager::checkNow() {
 bool OtaManager::installNow(const CheckResult& result, String& message) {
     selectedVersion_ = result.latestVersion;
     selectedAssetName_ = result.assetName;
-    updatePhase_ = "Flashing";
+    updatePhase_ = "Connecting";
     progressBytes_ = 0;
     progressTotalBytes_ = 0;
     progressPercent_ = 0;
+    lastMessage_ = result.assetName.isEmpty() ? "Connecting to firmware URL" : String("Connecting to ") + result.assetName;
     syncAppState("updating");
     pumpProgressCallback();
     WiFiClientSecure client;
     HTTPClient http;
+    const String firmwareUrl = (!result.latestVersion.isEmpty() && !result.assetName.isEmpty())
+        ? githubReleaseAssetUrl(settings_, result.latestVersion, result.assetName)
+        : result.assetUrl;
+    Serial.printf("[ota] opening firmware url: %s\n", firmwareUrl.c_str());
     const int code = beginAndGet(
         http,
         client,
-        result.assetUrl,
+        firmwareUrl,
         settings_.ota.allowInsecureTls,
         15000,
         [](HTTPClient&) {});
     if (code == HTTPC_ERROR_CONNECTION_REFUSED) {
+        Serial.printf("[ota] failed to open firmware url: %s\n", firmwareUrl.c_str());
         message = "Failed to open firmware URL";
         return false;
     }
     if (code != HTTP_CODE_OK) {
+        Serial.printf("[ota] firmware request failed code=%d url=%s\n", code, firmwareUrl.c_str());
         message = httpErrorWithDetail(http, "Firmware HTTP ", code);
         http.end();
         return false;
     }
+    updatePhase_ = "Downloading";
+    lastMessage_ = result.assetName.isEmpty() ? "Downloading firmware" : String("Downloading ") + result.assetName;
+    syncAppState("updating");
+    pumpProgressCallback();
     const int contentLength = http.getSize();
     if (contentLength <= 0) {
         message = "Invalid content length";
@@ -1130,6 +1325,10 @@ bool OtaManager::installNow(const CheckResult& result, String& message) {
         http.end();
         return false;
     }
+    updatePhase_ = "Flashing";
+    lastMessage_ = "Starting firmware write";
+    syncAppState("updating");
+    pumpProgressCallback();
 
     mbedtls_sha256_context sha;
     mbedtls_sha256_init(&sha);
@@ -1207,6 +1406,11 @@ bool OtaManager::installNow(const CheckResult& result, String& message) {
         return false;
     }
 
+    updatePhase_ = "Verifying";
+    lastMessage_ = "Verifying downloaded firmware";
+    syncAppState("updating");
+    pumpProgressCallback();
+
     uint8_t digest[32];
     mbedtls_sha256_finish_ret(&sha, digest);
     mbedtls_sha256_free(&sha);
@@ -1223,6 +1427,11 @@ bool OtaManager::installNow(const CheckResult& result, String& message) {
         return false;
     }
 
+    updatePhase_ = "Finalizing";
+    lastMessage_ = "Finalizing firmware update";
+    syncAppState("updating");
+    pumpProgressCallback();
+
     if (!Update.end()) {
         message = String("Update finalize failed: ") + Update.errorString();
         http.end();
@@ -1235,9 +1444,10 @@ bool OtaManager::installNow(const CheckResult& result, String& message) {
     }
 
     http.end();
-    updatePhase_ = "";
+    updatePhase_ = "Restarting";
     progressBytes_ = progressTotalBytes_;
     progressPercent_ = 100;
+    lastMessage_ = "Firmware installed. Restarting...";
     message = "update installed";
     syncAppState("installed");
     pumpProgressCallback();

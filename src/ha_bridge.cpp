@@ -142,6 +142,25 @@ String discoveryPayloadText(const SettingsBundle& settings, const char* objectId
     return out;
 }
 
+String discoveryPayloadSelect(const SettingsBundle& settings, const char* objectId, const char* name, const char* stateTopic, const char* commandTopic, const std::vector<String>& options, const char* icon, const char* valueTemplate, const String& configurationUrl) {
+    JsonDocument doc;
+    doc["name"] = name;
+    doc["uniq_id"] = entityUniqueId(settings, objectId);
+    doc["stat_t"] = stateTopic;
+    doc["cmd_t"] = commandTopic;
+    doc["avty_t"] = availabilityTopic(settings);
+    if (valueTemplate != nullptr) doc["val_tpl"] = valueTemplate;
+    if (icon != nullptr) doc["ic"] = icon;
+    JsonArray optionArray = doc["options"].to<JsonArray>();
+    for (const String& option : options) {
+        optionArray.add(option);
+    }
+    fillDevice(settings, doc["dev"].to<JsonObject>(), configurationUrl);
+    String out;
+    serializeJson(doc, out);
+    return out;
+}
+
 #ifdef APP_ENABLE_HACS_MQTT
 String discoveryPayloadHacsMediaPlayer(const SettingsBundle& settings) {
     JsonDocument doc;
